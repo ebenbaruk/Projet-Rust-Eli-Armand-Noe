@@ -92,6 +92,54 @@ impl UserId {
     }
 }
 
+/// Risk and interest parameters of the protocol.
+///
+/// They are grouped in one struct so the stress test can try other values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Params {
+    /// Maximum share of the collateral value that can be borrowed.
+    pub max_ltv: Bps,
+    /// Share of the collateral value above which a debt can be liquidated.
+    pub liquidation_threshold: Bps,
+    /// Maximum share of a debt that can be repaid in a single liquidation.
+    pub close_factor: Bps,
+    /// Extra collateral given to the liquidator, on top of the repaid amount.
+    pub liquidation_bonus: Bps,
+    /// Yearly interest rate when the pool is not used at all.
+    pub base_rate: Bps,
+    /// Utilization above which the interest rate rises sharply.
+    pub optimal_utilization: Bps,
+    /// Rate added between 0 % and the optimal utilization.
+    pub slope_low: Bps,
+    /// Rate added between the optimal utilization and 100 %.
+    pub slope_high: Bps,
+}
+
+impl Default for Params {
+    /// Returns the values of the specification (section 4.2).
+    fn default() -> Params {
+        Params {
+            max_ltv: Bps(7_500),
+            liquidation_threshold: Bps(8_000),
+            close_factor: Bps(5_000),
+            liquidation_bonus: Bps(500),
+            base_rate: Bps(200),
+            optimal_utilization: Bps(8_000),
+            slope_low: Bps(400),
+            slope_high: Bps(6_000),
+        }
+    }
+}
+
+/// The collateral and the debt of one borrower.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Position {
+    /// ETH deposited as collateral.
+    pub collateral: EthAmount,
+    /// USDC owed, interest included.
+    pub debt: UsdcAmount,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +191,21 @@ mod tests {
         assert_eq!(json, "150000");
         let user: UserId = serde_json::from_str("\"alice\"").unwrap();
         assert_eq!(user, UserId::new("alice"));
+    }
+
+    #[test]
+    fn default_params_match_the_specification() {
+        let params = Params::default();
+        assert_eq!(params.max_ltv, Bps(7_500));
+        assert_eq!(params.liquidation_threshold, Bps(8_000));
+        // Borrowing must always stop before the liquidation threshold.
+        assert!(params.max_ltv < params.liquidation_threshold);
+    }
+
+    #[test]
+    fn new_position_is_empty() {
+        let position = Position::default();
+        assert_eq!(position.collateral, EthAmount(0));
+        assert_eq!(position.debt, UsdcAmount(0));
     }
 }
