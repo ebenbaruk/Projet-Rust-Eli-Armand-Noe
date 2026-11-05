@@ -130,6 +130,29 @@ impl Protocol {
         self.positions.insert(user.clone(), position);
         Ok(position)
     }
+
+    /// Takes ETH out of the collateral of a user.
+    ///
+    /// The remaining collateral must still cover the debt with the LTV of the
+    /// parameters. Returns the updated position, or fails with `ZeroAmount`,
+    /// `UnknownUser` or `InsufficientCollateral`.
+    pub fn withdraw(&mut self, user: &UserId, amount: EthAmount) -> Result<Position, LendingError> {
+        if amount.0 == 0 {
+            return Err(LendingError::ZeroAmount);
+        }
+        let mut position = self.position(user)?;
+        if amount > position.collateral {
+            return Err(LendingError::InsufficientCollateral);
+        }
+
+        position.collateral.0 -= amount.0;
+        // The guardian only restricts new borrows, so the normal LTV is used here.
+        if position.debt > position.max_borrow(self.price, self.params.max_ltv) {
+            return Err(LendingError::InsufficientCollateral);
+        }
+        self.positions.insert(user.clone(), position);
+        Ok(position)
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +323,52 @@ mod tests {
         assert_eq!(
             protocol.repay(&bob, UsdcAmount::from_usdc(10)),
             Err(LendingError::NothingToRepay)
+        );
+    }
+
+    #[test]
+    fn withdraw_without_debt() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        let position = protocol.withdraw(&bob, EthAmount::from_eth(1)).unwrap();
+        assert_eq!(position.collateral, EthAmount(0));
+    }
+
+    #[test]
+    fn withdraw_keeps_enough_collateral_for_the_debt() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.borrow(&bob, UsdcAmount::from_usdc(750)).unwrap();
+        // Half an ETH is worth 1 000 USDC, so it still covers 750 USDC at 75 %.
+        let half_eth = EthAmount::from_eth(1).0 / 2;
+        assert!(protocol.withdraw(&bob, EthAmount(half_eth)).is_ok());
+        // Any further withdrawal would leave the debt uncovered.
+        assert_eq!(
+            protocol.withdraw(&bob, EthAmount(1)),
+            Err(LendingError::InsufficientCollateral)
+        );
+        assert_eq!(
+            protocol.position(&bob).unwrap().collateral,
+            EthAmount(half_eth)
+        );
+    }
+
+    #[test]
+    fn withdraw_errors() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        let carol = UserId::new("carol");
+        assert_eq!(
+            protocol.withdraw(&bob, EthAmount(0)),
+            Err(LendingError::ZeroAmount)
+        );
+        assert_eq!(
+            protocol.withdraw(&bob, EthAmount::from_eth(2)),
+            Err(LendingError::InsufficientCollateral)
+        );
+        assert_eq!(
+            protocol.withdraw(&carol, EthAmount(1)),
+            Err(LendingError::UnknownUser(carol))
         );
     }
 }
