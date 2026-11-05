@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::LendingError;
+use crate::interest;
 use crate::types::{Bps, EthAmount, Params, Position, Price, UsdcAmount, UserId};
 
 /// The whole state of the lending pool.
@@ -152,6 +153,25 @@ impl Protocol {
         }
         self.positions.insert(user.clone(), position);
         Ok(position)
+    }
+
+    /// Returns the total debt of all borrowers, interest included.
+    pub fn total_debt(&self) -> UsdcAmount {
+        let mut total = 0u64;
+        for position in self.positions.values() {
+            total = total.saturating_add(position.debt.0);
+        }
+        UsdcAmount(total)
+    }
+
+    /// Returns the share of the pool that is currently lent out.
+    pub fn utilization(&self) -> Bps {
+        interest::utilization(self.total_debt(), self.cash)
+    }
+
+    /// Returns the current yearly borrow rate.
+    pub fn current_rate(&self) -> Bps {
+        interest::annual_rate(self.utilization(), &self.params)
     }
 }
 
@@ -370,5 +390,20 @@ mod tests {
             protocol.withdraw(&carol, EthAmount(1)),
             Err(LendingError::UnknownUser(carol))
         );
+    }
+
+    #[test]
+    fn rate_follows_the_utilization() {
+        let mut protocol = funded_protocol();
+        assert_eq!(protocol.utilization(), Bps(0));
+        assert_eq!(protocol.current_rate(), Bps(200));
+
+        protocol
+            .borrow(&UserId::new("bob"), UsdcAmount::from_usdc(1_000))
+            .unwrap();
+        // 1 000 borrowed out of 10 000 supplied.
+        assert_eq!(protocol.total_debt(), UsdcAmount::from_usdc(1_000));
+        assert_eq!(protocol.utilization(), Bps(1_000));
+        assert_eq!(protocol.current_rate(), Bps(250));
     }
 }
