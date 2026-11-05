@@ -73,6 +73,63 @@ impl Protocol {
             None => Err(LendingError::UnknownUser(user.clone())),
         }
     }
+
+    /// Returns the LTV that applies to new borrows.
+    ///
+    /// It is the LTV of the parameters, unless the risk guardian has lowered it.
+    pub fn current_max_ltv(&self) -> Bps {
+        self.max_ltv_override.unwrap_or(self.params.max_ltv)
+    }
+
+    /// Lends USDC from the pool to a user, against their collateral.
+    ///
+    /// Returns the updated position. Fails with `ZeroAmount`, `BorrowingPaused`,
+    /// `UnknownUser`, `InsufficientCollateral` if the new debt would exceed the
+    /// borrowing limit, or `InsufficientLiquidity` if the pool lacks USDC.
+    pub fn borrow(&mut self, user: &UserId, amount: UsdcAmount) -> Result<Position, LendingError> {
+        if amount.0 == 0 {
+            return Err(LendingError::ZeroAmount);
+        }
+        if self.borrowing_paused {
+            return Err(LendingError::BorrowingPaused);
+        }
+
+        // Work on a copy and write it back only once every check has passed,
+        // so a refused borrow leaves the state untouched.
+        let mut position = self.position(user)?;
+        let new_debt = UsdcAmount(position.debt.0.saturating_add(amount.0));
+        if new_debt > position.max_borrow(self.price, self.current_max_ltv()) {
+            return Err(LendingError::InsufficientCollateral);
+        }
+        if amount > self.cash {
+            return Err(LendingError::InsufficientLiquidity);
+        }
+
+        position.debt = new_debt;
+        self.cash.0 -= amount.0;
+        self.positions.insert(user.clone(), position);
+        Ok(position)
+    }
+
+    /// Pays back part or all of the debt of a user.
+    ///
+    /// An amount larger than the debt only repays the debt. Returns the updated
+    /// position, or fails with `ZeroAmount`, `UnknownUser` or `NothingToRepay`.
+    pub fn repay(&mut self, user: &UserId, amount: UsdcAmount) -> Result<Position, LendingError> {
+        if amount.0 == 0 {
+            return Err(LendingError::ZeroAmount);
+        }
+        let mut position = self.position(user)?;
+        if position.debt.0 == 0 {
+            return Err(LendingError::NothingToRepay);
+        }
+
+        let paid = amount.min(position.debt);
+        position.debt.0 -= paid.0;
+        self.cash.0 = self.cash.0.saturating_add(paid.0);
+        self.positions.insert(user.clone(), position);
+        Ok(position)
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +182,124 @@ mod tests {
         assert_eq!(
             protocol.position(&carol),
             Err(LendingError::UnknownUser(carol))
+        );
+    }
+
+    /// A pool with 10 000 USDC supplied by alice and 1 ETH deposited by bob.
+    fn funded_protocol() -> Protocol {
+        let mut protocol = new_protocol();
+        protocol
+            .supply(&UserId::new("alice"), UsdcAmount::from_usdc(10_000))
+            .unwrap();
+        protocol
+            .deposit(&UserId::new("bob"), EthAmount::from_eth(1))
+            .unwrap();
+        protocol
+    }
+
+    #[test]
+    fn borrow_up_to_the_ltv() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        // 1 ETH at 2 000 USDC with a 75 % LTV allows 1 500 USDC.
+        let position = protocol.borrow(&bob, UsdcAmount::from_usdc(1_500)).unwrap();
+        assert_eq!(position.debt, UsdcAmount::from_usdc(1_500));
+        assert_eq!(protocol.cash, UsdcAmount::from_usdc(8_500));
+    }
+
+    #[test]
+    fn borrow_above_the_ltv_is_refused() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.borrow(&bob, UsdcAmount::from_usdc(1_000)).unwrap();
+        let result = protocol.borrow(&bob, UsdcAmount::from_usdc(501));
+        assert_eq!(result, Err(LendingError::InsufficientCollateral));
+        // The refused borrow did not change anything.
+        assert_eq!(
+            protocol.position(&bob).unwrap().debt,
+            UsdcAmount::from_usdc(1_000)
+        );
+        assert_eq!(protocol.cash, UsdcAmount::from_usdc(9_000));
+    }
+
+    #[test]
+    fn borrow_needs_liquidity() {
+        let mut protocol = new_protocol();
+        let bob = UserId::new("bob");
+        protocol
+            .supply(&UserId::new("alice"), UsdcAmount::from_usdc(100))
+            .unwrap();
+        protocol.deposit(&bob, EthAmount::from_eth(1)).unwrap();
+        let result = protocol.borrow(&bob, UsdcAmount::from_usdc(200));
+        assert_eq!(result, Err(LendingError::InsufficientLiquidity));
+    }
+
+    #[test]
+    fn borrow_errors() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        let carol = UserId::new("carol");
+        assert_eq!(
+            protocol.borrow(&bob, UsdcAmount(0)),
+            Err(LendingError::ZeroAmount)
+        );
+        assert_eq!(
+            protocol.borrow(&carol, UsdcAmount::from_usdc(10)),
+            Err(LendingError::UnknownUser(carol))
+        );
+    }
+
+    #[test]
+    fn guardian_can_pause_borrowing() {
+        let mut protocol = funded_protocol();
+        protocol.borrowing_paused = true;
+        let result = protocol.borrow(&UserId::new("bob"), UsdcAmount::from_usdc(10));
+        assert_eq!(result, Err(LendingError::BorrowingPaused));
+    }
+
+    #[test]
+    fn guardian_can_lower_the_ltv() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.max_ltv_override = Some(Bps(5_000));
+        assert_eq!(
+            protocol.borrow(&bob, UsdcAmount::from_usdc(1_001)),
+            Err(LendingError::InsufficientCollateral)
+        );
+        assert!(protocol.borrow(&bob, UsdcAmount::from_usdc(1_000)).is_ok());
+    }
+
+    #[test]
+    fn repay_part_of_the_debt() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.borrow(&bob, UsdcAmount::from_usdc(1_000)).unwrap();
+        let position = protocol.repay(&bob, UsdcAmount::from_usdc(400)).unwrap();
+        assert_eq!(position.debt, UsdcAmount::from_usdc(600));
+        assert_eq!(protocol.cash, UsdcAmount::from_usdc(9_400));
+    }
+
+    #[test]
+    fn repay_more_than_the_debt_only_repays_the_debt() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.borrow(&bob, UsdcAmount::from_usdc(1_000)).unwrap();
+        let position = protocol.repay(&bob, UsdcAmount::from_usdc(5_000)).unwrap();
+        assert_eq!(position.debt, UsdcAmount(0));
+        assert_eq!(protocol.cash, UsdcAmount::from_usdc(10_000));
+    }
+
+    #[test]
+    fn repay_errors() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        assert_eq!(
+            protocol.repay(&bob, UsdcAmount(0)),
+            Err(LendingError::ZeroAmount)
+        );
+        assert_eq!(
+            protocol.repay(&bob, UsdcAmount::from_usdc(10)),
+            Err(LendingError::NothingToRepay)
         );
     }
 }
