@@ -140,6 +140,55 @@ pub struct Position {
     pub debt: UsdcAmount,
 }
 
+impl Position {
+    /// Returns the value of the collateral in USDC at the given price.
+    pub fn collateral_value(&self, price: Price) -> UsdcAmount {
+        self.collateral.value_at(price)
+    }
+
+    /// Returns the largest debt this collateral allows with the given LTV.
+    pub fn max_borrow(&self, price: Price, max_ltv: Bps) -> UsdcAmount {
+        max_ltv.apply_to(self.collateral_value(price))
+    }
+
+    /// Returns the health factor of the position.
+    ///
+    /// The health factor is infinite when there is no debt.
+    pub fn health_factor(&self, price: Price, liquidation_threshold: Bps) -> HealthFactor {
+        if self.debt.0 == 0 {
+            return HealthFactor::INFINITE;
+        }
+        // collateral value x threshold is already scaled by 10 000 because the
+        // threshold is in bps, so the division gives the health factor in bps too.
+        let covered = self.collateral_value(price).0 as u128 * liquidation_threshold.0 as u128;
+        HealthFactor(to_u64(covered / self.debt.0 as u128))
+    }
+
+    /// Returns true when the health factor is strictly below 1.
+    pub fn is_liquidatable(&self, price: Price, liquidation_threshold: Bps) -> bool {
+        self.health_factor(price, liquidation_threshold) < HealthFactor::ONE
+    }
+
+    /// Returns the part of the debt that the collateral no longer covers.
+    pub fn bad_debt(&self, price: Price) -> UsdcAmount {
+        UsdcAmount(self.debt.0.saturating_sub(self.collateral_value(price).0))
+    }
+}
+
+/// Risk indicator of a position, scaled by 10 000 (a value of 10 000 means 1.0).
+///
+/// Below 1.0, the position can be liquidated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct HealthFactor(pub u64);
+
+impl HealthFactor {
+    /// A health factor of exactly 1.0, the liquidation limit.
+    pub const ONE: HealthFactor = HealthFactor(BPS_SCALE);
+
+    /// The health factor of a position without debt.
+    pub const INFINITE: HealthFactor = HealthFactor(u64::MAX);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +256,55 @@ mod tests {
         let position = Position::default();
         assert_eq!(position.collateral, EthAmount(0));
         assert_eq!(position.debt, UsdcAmount(0));
+    }
+
+    /// 1 ETH of collateral and a debt of 1 000 USDC.
+    fn sample_position() -> Position {
+        Position {
+            collateral: EthAmount::from_eth(1),
+            debt: UsdcAmount::from_usdc(1_000),
+        }
+    }
+
+    #[test]
+    fn max_borrow_uses_the_ltv() {
+        let position = sample_position();
+        let limit = position.max_borrow(Price::from_usdc(2_000), Bps(7_500));
+        assert_eq!(limit, UsdcAmount::from_usdc(1_500));
+    }
+
+    #[test]
+    fn health_factor_of_a_safe_position() {
+        // 2 000 x 80 % / 1 000 = 1.6
+        let health = sample_position().health_factor(Price::from_usdc(2_000), Bps(8_000));
+        assert_eq!(health, HealthFactor(16_000));
+    }
+
+    #[test]
+    fn health_factor_without_debt_is_infinite() {
+        let position = Position {
+            collateral: EthAmount::from_eth(1),
+            debt: UsdcAmount(0),
+        };
+        let health = position.health_factor(Price::from_usdc(2_000), Bps(8_000));
+        assert_eq!(health, HealthFactor::INFINITE);
+    }
+
+    #[test]
+    fn position_becomes_liquidatable_when_price_drops() {
+        let position = sample_position();
+        // At 1 250 USDC: 1 250 x 80 % = 1 000, exactly the debt.
+        assert!(!position.is_liquidatable(Price::from_usdc(1_250), Bps(8_000)));
+        assert!(position.is_liquidatable(Price::from_usdc(1_249), Bps(8_000)));
+    }
+
+    #[test]
+    fn bad_debt_appears_below_the_debt_value() {
+        let position = sample_position();
+        assert_eq!(position.bad_debt(Price::from_usdc(1_200)), UsdcAmount(0));
+        assert_eq!(
+            position.bad_debt(Price::from_usdc(800)),
+            UsdcAmount::from_usdc(200)
+        );
     }
 }
