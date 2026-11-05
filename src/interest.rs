@@ -13,6 +13,23 @@ fn scale(value: u64, numerator: u64, denominator: u64) -> u64 {
     to_u64(value as u128 * numerator as u128 / denominator as u128)
 }
 
+/// Number of minutes in a year. Interest is applied once per simulated minute.
+pub const MINUTES_PER_YEAR: u64 = 525_600;
+
+/// Returns the interest owed on a debt for one minute, and the new remainder.
+///
+/// One minute of interest on a small debt is often less than a cent. Instead of
+/// losing it to rounding, the part below one cent is returned as a remainder
+/// and added back the next minute. The remainder is expressed in
+/// 1 / (10 000 x 525 600) cent.
+pub fn interest_for_one_minute(debt: UsdcAmount, remainder: u64, rate: Bps) -> (UsdcAmount, u64) {
+    let denominator = BPS_SCALE as u128 * MINUTES_PER_YEAR as u128;
+    let owed = debt.0 as u128 * rate.0 as u128 + remainder as u128;
+    let interest = owed / denominator;
+    let new_remainder = owed % denominator;
+    (UsdcAmount(to_u64(interest)), to_u64(new_remainder))
+}
+
 /// Returns the share of the pool that is currently lent out.
 ///
 /// The USDC supplied by lenders is either still in the pool (`cash`) or
@@ -71,5 +88,29 @@ mod tests {
         // 6 % + (90 % - 80 %) / 20 % x 60 % = 36 %
         assert_eq!(annual_rate(Bps(9_000), &params), Bps(3_600));
         assert_eq!(annual_rate(Bps(10_000), &params), Bps(6_600));
+    }
+
+    #[test]
+    fn interest_on_a_large_debt() {
+        // 5 256 000 USDC at 10 % a year: 525 600 USDC a year, so 1 USDC a minute.
+        let debt = UsdcAmount::from_usdc(5_256_000);
+        let (interest, remainder) = interest_for_one_minute(debt, 0, Bps(1_000));
+        assert_eq!(interest, UsdcAmount::from_usdc(1));
+        assert_eq!(remainder, 0);
+    }
+
+    #[test]
+    fn small_interest_is_carried_over() {
+        // 1 000 USDC at 6 % a year is about 0.011 cent a minute.
+        let debt = UsdcAmount::from_usdc(1_000);
+        let mut remainder = 0;
+        let mut total = 0;
+        for _ in 0..MINUTES_PER_YEAR {
+            let (interest, new_remainder) = interest_for_one_minute(debt, remainder, Bps(600));
+            total += interest.0;
+            remainder = new_remainder;
+        }
+        // After a year, exactly 6 % has been charged: 60 USDC.
+        assert_eq!(UsdcAmount(total), UsdcAmount::from_usdc(60));
     }
 }

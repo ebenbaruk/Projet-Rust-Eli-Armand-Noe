@@ -173,6 +173,25 @@ impl Protocol {
     pub fn current_rate(&self) -> Bps {
         interest::annual_rate(self.utilization(), &self.params)
     }
+
+    /// Adds one minute of interest to the debt of every borrower.
+    ///
+    /// All positions use the rate of the current utilization. Returns the total
+    /// interest added.
+    pub fn accrue_interest(&mut self) -> UsdcAmount {
+        // The rate is read once, before any debt changes, so every borrower
+        // pays the same rate for this minute.
+        let rate = self.current_rate();
+        let mut total = 0u64;
+        for position in self.positions.values_mut() {
+            let (interest, remainder) =
+                interest::interest_for_one_minute(position.debt, position.interest_remainder, rate);
+            position.debt.0 = position.debt.0.saturating_add(interest.0);
+            position.interest_remainder = remainder;
+            total = total.saturating_add(interest.0);
+        }
+        UsdcAmount(total)
+    }
 }
 
 #[cfg(test)]
@@ -405,5 +424,34 @@ mod tests {
         assert_eq!(protocol.total_debt(), UsdcAmount::from_usdc(1_000));
         assert_eq!(protocol.utilization(), Bps(1_000));
         assert_eq!(protocol.current_rate(), Bps(250));
+    }
+
+    #[test]
+    fn interest_increases_the_debt() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.borrow(&bob, UsdcAmount::from_usdc(1_000)).unwrap();
+        let rate = protocol.current_rate();
+
+        let mut total = UsdcAmount(0);
+        for _ in 0..interest::MINUTES_PER_YEAR {
+            total.0 += protocol.accrue_interest().0;
+        }
+
+        // The rate moves a little as the debt grows, so the yearly interest is
+        // at least the starting rate applied to the starting debt.
+        let debt = protocol.position(&bob).unwrap().debt;
+        assert_eq!(debt.0, UsdcAmount::from_usdc(1_000).0 + total.0);
+        assert!(total >= rate.apply_to(UsdcAmount::from_usdc(1_000)));
+    }
+
+    #[test]
+    fn no_interest_without_debt() {
+        let mut protocol = funded_protocol();
+        assert_eq!(protocol.accrue_interest(), UsdcAmount(0));
+        assert_eq!(
+            protocol.position(&UserId::new("bob")).unwrap().debt,
+            UsdcAmount(0)
+        );
     }
 }

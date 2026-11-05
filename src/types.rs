@@ -138,6 +138,9 @@ pub struct Position {
     pub collateral: EthAmount,
     /// USDC owed, interest included.
     pub debt: UsdcAmount,
+    /// Part of the interest smaller than one cent, carried over to the next minute.
+    #[serde(default)]
+    pub interest_remainder: u64,
 }
 
 impl Position {
@@ -263,6 +266,7 @@ mod tests {
         Position {
             collateral: EthAmount::from_eth(1),
             debt: UsdcAmount::from_usdc(1_000),
+            interest_remainder: 0,
         }
     }
 
@@ -285,6 +289,7 @@ mod tests {
         let position = Position {
             collateral: EthAmount::from_eth(1),
             debt: UsdcAmount(0),
+            interest_remainder: 0,
         };
         let health = position.health_factor(Price::from_usdc(2_000), Bps(8_000));
         assert_eq!(health, HealthFactor::INFINITE);
