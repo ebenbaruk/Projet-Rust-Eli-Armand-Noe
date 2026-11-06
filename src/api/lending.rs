@@ -19,7 +19,9 @@ pub fn routes() -> Router<AppState> {
         .route("/borrow", post(borrow))
         .route("/repay", post(repay))
         .route("/withdraw", post(withdraw))
-        .route("/price", get(get_price))
+        .route("/pool", get(get_pool))
+        .route("/positions", get(get_positions))
+        .route("/price", get(get_price).post(set_price))
 }
 
 /// Body of the requests that move USDC: `{ "user": "alice", "amount": 100000 }`.
@@ -72,6 +74,13 @@ pub struct PositionView {
     pub health_factor: Option<HealthFactor>,
     /// True when the position can be liquidated.
     pub liquidatable: bool,
+}
+
+/// Body of `POST /price`: `{ "price": 150000 }`.
+#[derive(Debug, Deserialize)]
+pub struct PriceRequest {
+    /// New price of 1 ETH in USDC cents.
+    pub price: Price,
 }
 
 /// Current price of ETH.
@@ -163,12 +172,44 @@ pub async fn withdraw(
     Ok(Json(position_view(&protocol, &request.user, position)))
 }
 
+/// GET /pool: returns the state of the pool.
+pub async fn get_pool(State(state): State<AppState>) -> Json<PoolView> {
+    let protocol = state.lock();
+    Json(pool_view(&protocol))
+}
+
+/// GET /positions: returns every position with its health factor.
+pub async fn get_positions(State(state): State<AppState>) -> Json<Vec<PositionView>> {
+    let protocol = state.lock();
+    let mut views = Vec::new();
+    for (user, position) in &protocol.positions {
+        views.push(position_view(&protocol, user, *position));
+    }
+    Json(views)
+}
+
 /// GET /price: returns the current price of ETH.
 pub async fn get_price(State(state): State<AppState>) -> Json<PriceView> {
     let protocol = state.lock();
     Json(PriceView {
         price: protocol.price,
     })
+}
+
+/// POST /price: sets the price of ETH by hand, to test liquidations without
+/// a replay. Returns the new price, or `ZeroAmount` for a zero price.
+pub async fn set_price(
+    State(state): State<AppState>,
+    Json(request): Json<PriceRequest>,
+) -> Result<Json<PriceView>, LendingError> {
+    if request.price.0 == 0 {
+        return Err(LendingError::ZeroAmount);
+    }
+    let mut protocol = state.lock();
+    protocol.price = request.price;
+    Ok(Json(PriceView {
+        price: protocol.price,
+    }))
 }
 
 #[cfg(test)]
@@ -270,5 +311,43 @@ mod tests {
         let state = funded_state();
         let result = withdraw(State(state), eth("bob", 2)).await;
         assert!(matches!(result, Err(LendingError::InsufficientCollateral)));
+    }
+
+    #[tokio::test]
+    async fn pool_route_shows_utilization() {
+        let state = funded_state();
+        state
+            .lock()
+            .borrow(&UserId::new("bob"), UsdcAmount::from_usdc(1_000))
+            .unwrap();
+        let Json(pool) = get_pool(State(state)).await;
+        assert_eq!(pool.total_debt, UsdcAmount::from_usdc(1_000));
+        assert_eq!(pool.utilization, Bps(1_000));
+    }
+
+    #[tokio::test]
+    async fn price_drop_makes_a_position_liquidatable() {
+        let state = funded_state();
+        state
+            .lock()
+            .borrow(&UserId::new("bob"), UsdcAmount::from_usdc(1_500))
+            .unwrap();
+
+        let request = Json(PriceRequest {
+            price: Price::from_usdc(1_500),
+        });
+        let Json(view) = set_price(State(state.clone()), request).await.unwrap();
+        assert_eq!(view.price, Price::from_usdc(1_500));
+
+        let Json(positions) = get_positions(State(state)).await;
+        assert_eq!(positions.len(), 1);
+        assert!(positions[0].liquidatable);
+    }
+
+    #[tokio::test]
+    async fn zero_price_is_refused() {
+        let request = Json(PriceRequest { price: Price(0) });
+        let result = set_price(State(test_state()), request).await;
+        assert!(matches!(result, Err(LendingError::ZeroAmount)));
     }
 }
