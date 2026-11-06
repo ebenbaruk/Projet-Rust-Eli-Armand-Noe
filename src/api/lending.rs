@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::error::LendingError;
+use crate::persistence;
 use crate::protocol::Protocol;
 use crate::types::{Bps, EthAmount, HealthFactor, Position, Price, UsdcAmount, UserId};
 
@@ -22,6 +23,8 @@ pub fn routes() -> Router<AppState> {
         .route("/pool", get(get_pool))
         .route("/positions", get(get_positions))
         .route("/price", get(get_price).post(set_price))
+        .route("/save", post(save))
+        .route("/load", post(load))
 }
 
 /// Body of the requests that move USDC: `{ "user": "alice", "amount": 100000 }`.
@@ -212,6 +215,26 @@ pub async fn set_price(
     }))
 }
 
+/// POST /save: writes the state of the protocol to the state file.
+/// Returns the state of the pool, or `Storage` if the file cannot be written.
+pub async fn save(State(state): State<AppState>) -> Result<Json<PoolView>, LendingError> {
+    // Copy the state and release the lock before writing, so the replay and
+    // the bots are not blocked by the disk.
+    let snapshot = state.lock().clone();
+    persistence::save(&snapshot, &state.state_file)?;
+    Ok(Json(pool_view(&snapshot)))
+}
+
+/// POST /load: replaces the state of the protocol with the state file.
+/// Returns the state of the pool, or `Storage` if the file cannot be read.
+pub async fn load(State(state): State<AppState>) -> Result<Json<PoolView>, LendingError> {
+    // Read the file first: the lock is only taken to swap the state.
+    let loaded = persistence::load(&state.state_file)?;
+    let mut protocol = state.lock();
+    *protocol = loaded;
+    Ok(Json(pool_view(&protocol)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +372,22 @@ mod tests {
         let request = Json(PriceRequest { price: Price(0) });
         let result = set_price(State(test_state()), request).await;
         assert!(matches!(result, Err(LendingError::ZeroAmount)));
+    }
+
+    #[tokio::test]
+    async fn save_and_load_routes() {
+        let mut state = funded_state();
+        state.state_file = std::env::temp_dir().join("crashlend-routes.json");
+        let Json(saved) = save(State(state.clone())).await.unwrap();
+        assert_eq!(saved.cash, UsdcAmount::from_usdc(10_000));
+
+        // Change the state, then load the saved file to undo the change.
+        state
+            .lock()
+            .supply(&UserId::new("alice"), UsdcAmount::from_usdc(5_000))
+            .unwrap();
+        let Json(pool) = load(State(state.clone())).await.unwrap();
+        std::fs::remove_file(&state.state_file).unwrap();
+        assert_eq!(pool.cash, UsdcAmount::from_usdc(10_000));
     }
 }

@@ -2,6 +2,7 @@
 //!
 //! Each part of the project adds its own routes in a submodule.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::Json;
@@ -22,13 +23,19 @@ pub mod lending;
 pub struct AppState {
     /// The lending pool. The replay task and the bots share the same pointer.
     pub protocol: Arc<Mutex<Protocol>>,
+    /// File used by `/save` and `/load`.
+    pub state_file: PathBuf,
 }
+
+/// Default file used to save the state.
+pub const STATE_FILE: &str = "state.json";
 
 impl AppState {
     /// Wraps a protocol so it can be shared between tasks.
     pub fn new(protocol: Protocol) -> AppState {
         AppState {
             protocol: Arc::new(Mutex::new(protocol)),
+            state_file: PathBuf::from(STATE_FILE),
         }
     }
 
