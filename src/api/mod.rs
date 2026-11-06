@@ -4,8 +4,13 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use axum::Json;
 use axum::Router;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 
+use crate::error::LendingError;
 use crate::protocol::Protocol;
 
 pub mod lending;
@@ -41,4 +46,65 @@ impl AppState {
 /// Builds the router with every route of the API.
 pub fn router(state: AppState) -> Router {
     Router::new().merge(lending::routes()).with_state(state)
+}
+
+/// Body of every error response: `{ "error": "<message>" }`.
+#[derive(Debug, Serialize)]
+pub struct ErrorBody {
+    /// Readable description of the error.
+    pub error: String,
+}
+
+/// Returns the HTTP status that matches an error.
+pub fn status_of(error: &LendingError) -> StatusCode {
+    match error {
+        LendingError::ZeroAmount => StatusCode::BAD_REQUEST,
+        LendingError::UnknownUser(_) | LendingError::ScenarioNotFound(_) => StatusCode::NOT_FOUND,
+        // The request is valid, but the rules of the protocol refuse it.
+        LendingError::InsufficientCollateral
+        | LendingError::InsufficientLiquidity
+        | LendingError::NothingToRepay
+        | LendingError::PositionHealthy
+        | LendingError::BorrowingPaused => StatusCode::UNPROCESSABLE_ENTITY,
+        LendingError::ReplayAlreadyRunning => StatusCode::CONFLICT,
+        LendingError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// Lets handlers return `Result<_, LendingError>` directly.
+impl IntoResponse for LendingError {
+    fn into_response(self) -> Response {
+        let body = ErrorBody {
+            error: self.to_string(),
+        };
+        (status_of(&self), Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::UserId;
+
+    #[test]
+    fn errors_have_a_matching_status() {
+        assert_eq!(
+            status_of(&LendingError::ZeroAmount),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_of(&LendingError::UnknownUser(UserId::new("bob"))),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_of(&LendingError::BorrowingPaused),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[test]
+    fn error_response_uses_the_status() {
+        let response = LendingError::InsufficientLiquidity.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
 }
