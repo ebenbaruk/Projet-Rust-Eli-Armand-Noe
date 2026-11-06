@@ -17,6 +17,8 @@ pub fn routes() -> Router<AppState> {
         .route("/supply", post(supply))
         .route("/deposit", post(deposit))
         .route("/borrow", post(borrow))
+        .route("/repay", post(repay))
+        .route("/withdraw", post(withdraw))
         .route("/price", get(get_price))
 }
 
@@ -141,6 +143,26 @@ pub async fn borrow(
     Ok(Json(position_view(&protocol, &request.user, position)))
 }
 
+/// POST /repay: pays back debt. Returns the position of the user.
+pub async fn repay(
+    State(state): State<AppState>,
+    Json(request): Json<UsdcRequest>,
+) -> Result<Json<PositionView>, LendingError> {
+    let mut protocol = state.lock();
+    let position = protocol.repay(&request.user, request.amount)?;
+    Ok(Json(position_view(&protocol, &request.user, position)))
+}
+
+/// POST /withdraw: takes ETH collateral back. Returns the position of the user.
+pub async fn withdraw(
+    State(state): State<AppState>,
+    Json(request): Json<EthRequest>,
+) -> Result<Json<PositionView>, LendingError> {
+    let mut protocol = state.lock();
+    let position = protocol.withdraw(&request.user, request.amount)?;
+    Ok(Json(position_view(&protocol, &request.user, position)))
+}
+
 /// GET /price: returns the current price of ETH.
 pub async fn get_price(State(state): State<AppState>) -> Json<PriceView> {
     let protocol = state.lock();
@@ -156,6 +178,21 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState::new(Protocol::new(Params::default(), Price::from_usdc(2_000)))
+    }
+
+    /// 10 000 USDC supplied by alice and 1 ETH deposited by bob.
+    fn funded_state() -> AppState {
+        let state = test_state();
+        {
+            let mut protocol = state.lock();
+            protocol
+                .supply(&UserId::new("alice"), UsdcAmount::from_usdc(10_000))
+                .unwrap();
+            protocol
+                .deposit(&UserId::new("bob"), EthAmount::from_eth(1))
+                .unwrap();
+        }
+        state
     }
 
     fn usdc(user: &str, usdc: u64) -> Json<UsdcRequest> {
@@ -210,5 +247,28 @@ mod tests {
         let request: EthRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.user, UserId::new("bob"));
         assert_eq!(request.amount, EthAmount::from_eth(2));
+    }
+
+    #[tokio::test]
+    async fn repay_and_withdraw() {
+        let state = funded_state();
+        state
+            .lock()
+            .borrow(&UserId::new("bob"), UsdcAmount::from_usdc(1_000))
+            .unwrap();
+
+        let Json(position) = repay(State(state.clone()), usdc("bob", 1_000))
+            .await
+            .unwrap();
+        assert_eq!(position.debt, UsdcAmount(0));
+        let Json(position) = withdraw(State(state.clone()), eth("bob", 1)).await.unwrap();
+        assert_eq!(position.collateral, EthAmount(0));
+    }
+
+    #[tokio::test]
+    async fn withdraw_errors_are_returned() {
+        let state = funded_state();
+        let result = withdraw(State(state), eth("bob", 2)).await;
+        assert!(matches!(result, Err(LendingError::InsufficientCollateral)));
     }
 }
