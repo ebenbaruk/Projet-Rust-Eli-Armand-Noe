@@ -1,10 +1,12 @@
-//! Reports built from the outcomes of the stress test.
+//! Reports built from the outcomes of the stress test and of a crash replay.
 
 use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::types::UsdcAmount;
+use crate::bots::BotReport;
+use crate::protocol::Protocol;
+use crate::types::{Price, UsdcAmount};
 
 /// Outcomes of many runs made with the same rules.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -84,9 +86,65 @@ impl StressReport {
     }
 }
 
+/// Result of a crash replay, served by `GET /report`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplayReport {
+    /// Id of the replayed scenario.
+    pub scenario: String,
+    /// Number of simulated minutes.
+    pub minutes: usize,
+    /// Price of ETH at the first minute.
+    pub start_price: Price,
+    /// Lowest price of ETH during the replay.
+    pub lowest_price: Price,
+    /// Price of ETH at the last minute.
+    pub end_price: Price,
+    /// Liquidations made by all the bots.
+    pub liquidations: u64,
+    /// Debt repaid by all the bots.
+    pub repaid: UsdcAmount,
+    /// Debt no longer covered by the collateral at the end of the replay.
+    /// The protocol survived the crash if it is zero.
+    pub bad_debt: UsdcAmount,
+    /// What each bot did.
+    pub bots: Vec<BotReport>,
+}
+
+impl ReplayReport {
+    /// Builds the report from the replayed prices, the protocol at the end of
+    /// the replay and the reports of the bots.
+    pub fn new(
+        scenario: &str,
+        prices: &[Price],
+        protocol: &Protocol,
+        bots: Vec<BotReport>,
+    ) -> ReplayReport {
+        let mut liquidations = 0;
+        let mut repaid = 0u64;
+        for bot in &bots {
+            liquidations += bot.liquidations;
+            repaid = repaid.saturating_add(bot.repaid.0);
+        }
+        // An empty replay did not move the price: the current one is used.
+        let current = protocol.price;
+        ReplayReport {
+            scenario: scenario.to_string(),
+            minutes: prices.len(),
+            start_price: prices.first().copied().unwrap_or(current),
+            lowest_price: prices.iter().min().copied().unwrap_or(current),
+            end_price: prices.last().copied().unwrap_or(current),
+            liquidations,
+            repaid: UsdcAmount(repaid),
+            bad_debt: protocol.total_bad_debt(),
+            bots,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Params;
 
     #[test]
     fn tally_counts_survivals_and_bad_debt() {
@@ -116,5 +174,35 @@ mod tests {
         assert_eq!(total.runs, 2);
         assert_eq!(total.survived, 1);
         assert_eq!(total.bad_debt, UsdcAmount(50));
+    }
+
+    #[test]
+    fn replay_report_adds_up_the_bots() {
+        let protocol = Protocol::new(Params::default(), Price::from_usdc(1_500));
+        let prices = [2_000, 1_200, 1_500].map(Price::from_usdc);
+        let bots = vec![
+            BotReport {
+                name: "fast",
+                liquidations: 2,
+                missed: 0,
+                repaid: UsdcAmount(300),
+            },
+            BotReport {
+                name: "slow",
+                liquidations: 1,
+                missed: 4,
+                repaid: UsdcAmount(100),
+            },
+        ];
+
+        let report = ReplayReport::new("test", &prices, &protocol, bots);
+
+        assert_eq!(report.minutes, 3);
+        assert_eq!(report.start_price, Price::from_usdc(2_000));
+        assert_eq!(report.lowest_price, Price::from_usdc(1_200));
+        assert_eq!(report.end_price, Price::from_usdc(1_500));
+        assert_eq!(report.liquidations, 3);
+        assert_eq!(report.repaid, UsdcAmount(400));
+        assert_eq!(report.bad_debt, UsdcAmount(0));
     }
 }

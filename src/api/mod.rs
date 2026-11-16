@@ -14,6 +14,7 @@ use serde::Serialize;
 use crate::error::LendingError;
 use crate::guardian::Guardian;
 use crate::protocol::Protocol;
+use crate::replay::ReplayState;
 
 pub mod lending;
 pub mod risk;
@@ -21,14 +22,17 @@ pub mod risk;
 /// State shared by all the HTTP handlers.
 ///
 /// It is cloned for every request, which only copies the `Arc` pointers.
-/// When both locks are needed, the protocol is always locked first, so two
-/// handlers can never wait on each other.
+/// When several locks are needed, they are always taken in the same order:
+/// protocol, then guardian, then replay. Two tasks can therefore never wait
+/// on each other.
 #[derive(Clone)]
 pub struct AppState {
     /// The lending pool. The replay task and the bots share the same pointer.
     pub protocol: Arc<Mutex<Protocol>>,
     /// The risk guardian, fed with each new price.
     pub guardian: Arc<Mutex<Guardian>>,
+    /// Progress, liquidations and report of the crash replays.
+    pub replay: Arc<Mutex<ReplayState>>,
     /// File used by `/save` and `/load`.
     pub state_file: PathBuf,
 }
@@ -42,6 +46,7 @@ impl AppState {
         AppState {
             protocol: Arc::new(Mutex::new(protocol)),
             guardian: Arc::new(Mutex::new(Guardian::new(true))),
+            replay: Arc::new(Mutex::new(ReplayState::default())),
             state_file: PathBuf::from(STATE_FILE),
         }
     }
@@ -59,6 +64,13 @@ impl AppState {
     /// Locks the guardian. Same rules as `lock`, and always after it.
     pub fn lock_guardian(&self) -> MutexGuard<'_, Guardian> {
         self.guardian
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Locks the replay state. Same rules as `lock`, and always last.
+    pub fn lock_replay(&self) -> MutexGuard<'_, ReplayState> {
+        self.replay
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -89,6 +101,7 @@ pub fn status_of(error: &LendingError) -> StatusCode {
         | LendingError::InsufficientLiquidity
         | LendingError::NothingToRepay
         | LendingError::PositionHealthy
+        | LendingError::NothingToLiquidate
         | LendingError::BorrowingPaused => StatusCode::UNPROCESSABLE_ENTITY,
         LendingError::ReplayAlreadyRunning => StatusCode::CONFLICT,
         LendingError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
