@@ -1,12 +1,15 @@
-//! Routes of the risk guardian.
+//! Routes of the risk guardian and of the stress test.
 
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
+use crate::error::LendingError;
 use crate::guardian::{Guardian, RiskMode};
+use crate::report::StressReport;
+use crate::stress_test::{self, StressConfig};
 use crate::types::Bps;
 
 /// Routes of the risk part of the API.
@@ -14,6 +17,14 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/risk", get(get_risk))
         .route("/risk/toggle", post(toggle_risk))
+        .route("/stress-test", post(run_stress_test))
+}
+
+/// Body of `POST /stress-test`: `{ "scenarios": 10000 }`.
+#[derive(Debug, Deserialize)]
+pub struct StressRequest {
+    /// Number of random crashes to replay.
+    pub scenarios: usize,
 }
 
 /// State of the guardian as returned by the API.
@@ -48,6 +59,27 @@ pub async fn toggle_risk(State(state): State<AppState>) -> Json<RiskView> {
     let enabled = !guardian.is_enabled();
     guardian.set_enabled(enabled, &mut protocol);
     Json(risk_view(&guardian))
+}
+
+/// POST /stress-test: replays random crashes with and without the guardian.
+/// Returns the report, or `ZeroAmount` for zero scenarios.
+pub async fn run_stress_test(
+    State(state): State<AppState>,
+    Json(request): Json<StressRequest>,
+) -> Result<Json<StressReport>, LendingError> {
+    if request.scenarios == 0 {
+        return Err(LendingError::ZeroAmount);
+    }
+    let params = state.lock().params;
+    let config = StressConfig::new(request.scenarios);
+    // Seconds of pure computation: on the blocking pool, the async workers
+    // keep serving the other requests in the meantime.
+    let task = tokio::task::spawn_blocking(move || stress_test::run(params, &config));
+    match task.await {
+        Ok(report) => Ok(Json(report?)),
+        // A blocking task cannot be cancelled, so the only error is a panic: pass it on.
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
+    }
 }
 
 #[cfg(test)]
