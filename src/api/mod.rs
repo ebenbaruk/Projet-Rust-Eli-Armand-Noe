@@ -82,7 +82,7 @@ pub struct ErrorBody {
 /// Returns the HTTP status that matches an error.
 pub fn status_of(error: &LendingError) -> StatusCode {
     match error {
-        LendingError::ZeroAmount => StatusCode::BAD_REQUEST,
+        LendingError::ZeroAmount | LendingError::TooManyScenarios(_) => StatusCode::BAD_REQUEST,
         LendingError::UnknownUser(_) | LendingError::ScenarioNotFound(_) => StatusCode::NOT_FOUND,
         // The request is valid, but the rules of the protocol refuse it.
         LendingError::InsufficientCollateral
@@ -119,6 +119,10 @@ mod tests {
         assert_eq!(
             status_of(&LendingError::UnknownUser(UserId::new("bob"))),
             StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_of(&LendingError::TooManyScenarios(100_000)),
+            StatusCode::BAD_REQUEST
         );
         assert_eq!(
             status_of(&LendingError::BorrowingPaused),

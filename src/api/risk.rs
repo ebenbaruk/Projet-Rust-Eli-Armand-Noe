@@ -9,7 +9,7 @@ use crate::api::AppState;
 use crate::error::LendingError;
 use crate::guardian::{Guardian, RiskMode};
 use crate::report::StressReport;
-use crate::stress_test::{self, StressConfig};
+use crate::stress_test::{self, MAX_SCENARIOS, StressConfig};
 use crate::types::Bps;
 
 /// Routes of the risk part of the API.
@@ -70,6 +70,11 @@ pub async fn run_stress_test(
     if request.scenarios == 0 {
         return Err(LendingError::ZeroAmount);
     }
+    // A blocking task cannot be cancelled, so a huge request would keep every
+    // core busy long after the client gave up.
+    if request.scenarios > MAX_SCENARIOS {
+        return Err(LendingError::TooManyScenarios(MAX_SCENARIOS));
+    }
     let params = state.lock().params;
     let config = StressConfig::new(request.scenarios);
     // Seconds of pure computation: on the blocking pool, the async workers
@@ -126,5 +131,23 @@ mod tests {
         let Json(view) = toggle_risk(State(state.clone())).await;
         assert_eq!(view.mode, RiskMode::Emergency);
         assert!(state.lock().borrowing_paused);
+    }
+
+    #[tokio::test]
+    async fn stress_test_refuses_a_bad_number_of_scenarios() {
+        let state = test_state();
+
+        let zero = Json(StressRequest { scenarios: 0 });
+        let result = run_stress_test(State(state.clone()), zero).await;
+        assert_eq!(result.err(), Some(LendingError::ZeroAmount));
+
+        let too_many = Json(StressRequest {
+            scenarios: MAX_SCENARIOS + 1,
+        });
+        let result = run_stress_test(State(state.clone()), too_many).await;
+        assert_eq!(
+            result.err(),
+            Some(LendingError::TooManyScenarios(MAX_SCENARIOS))
+        );
     }
 }

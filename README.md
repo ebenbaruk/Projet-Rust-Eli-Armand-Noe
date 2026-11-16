@@ -130,7 +130,7 @@ Le gardien réduit la dette irrécouvrable de 39 %, mais il améliore peu le tau
 |---|---|---|
 | GET | `/risk` | mode, baisse observée (en bps) et état du gardien |
 | POST | `/risk/toggle` | active ou désactive le gardien |
-| POST | `/stress-test` | `{ "scenarios": 10000 }`, renvoie le rapport du stress test |
+| POST | `/stress-test` | `{ "scenarios": 10000 }`, renvoie le rapport du stress test (100 000 scénarios au maximum) |
 
 `POST /price` compte comme une minute pour le gardien. On peut donc le tester à la main :
 

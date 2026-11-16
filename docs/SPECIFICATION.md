@@ -357,6 +357,7 @@ Toutes les fonctions de la bibliothèque qui peuvent échouer renvoient `Result<
 | `BorrowingPaused` | emprunt refusé par le gardien |
 | `ScenarioNotFound` | identifiant de scénario inconnu |
 | `ReplayAlreadyRunning` | un rejeu est déjà en cours |
+| `TooManyScenarios` | stress test demandé avec plus de 100 000 scénarios |
 | `Storage(String)` | erreur de lecture ou d'écriture de fichier JSON |
 
 ---
