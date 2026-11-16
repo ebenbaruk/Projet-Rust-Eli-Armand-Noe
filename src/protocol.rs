@@ -180,14 +180,19 @@ impl Protocol {
 
     /// Adds one minute of interest to the debt of every borrower.
     ///
-    /// All positions use the rate of the current utilization. Returns the total
-    /// interest added.
+    /// All positions use the rate of the current utilization. A position
+    /// without collateral earns no interest. Returns the total interest added.
     pub fn accrue_interest(&mut self) -> UsdcAmount {
         // The rate is read once, before any debt changes, so every borrower
         // pays the same rate for this minute.
         let rate = self.current_rate();
         let mut total = 0u64;
         for position in self.positions.values_mut() {
+            // Debt without collateral is bad debt: nobody will repay it, so
+            // letting it grow would only inflate the measured loss.
+            if position.collateral.0 == 0 {
+                continue;
+            }
             let (interest, remainder) =
                 interest::interest_for_one_minute(position.debt, position.interest_remainder, rate);
             position.debt.0 = position.debt.0.saturating_add(interest.0);
@@ -456,6 +461,25 @@ mod tests {
         assert_eq!(
             protocol.position(&UserId::new("bob")).unwrap().debt,
             UsdcAmount(0)
+        );
+    }
+
+    #[test]
+    fn no_interest_on_a_position_without_collateral() {
+        let mut protocol = funded_protocol();
+        let bob = UserId::new("bob");
+        protocol.borrow(&bob, UsdcAmount::from_usdc(1_000)).unwrap();
+        // What a liquidation that seized every ETH leaves behind.
+        protocol.positions.get_mut(&bob).unwrap().collateral = EthAmount(0);
+
+        // One minute of interest on 1 000 USDC is less than a cent, so the
+        // test runs for a whole day to make any interest visible.
+        for _ in 0..24 * 60 {
+            assert_eq!(protocol.accrue_interest(), UsdcAmount(0));
+        }
+        assert_eq!(
+            protocol.position(&bob).unwrap().debt,
+            UsdcAmount::from_usdc(1_000)
         );
     }
 
