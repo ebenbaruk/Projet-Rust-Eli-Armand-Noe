@@ -5,12 +5,16 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::LendingError;
 use crate::interest;
 use crate::types::{Bps, EthAmount, Params, Position, Price, UsdcAmount, UserId};
 
 /// The whole state of the lending pool.
-#[derive(Debug, Clone)]
+///
+/// It derives `Serialize` and `Deserialize` so it can be saved to a JSON file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Protocol {
     /// Risk and interest parameters.
     pub params: Params,
@@ -453,5 +457,18 @@ mod tests {
             protocol.position(&UserId::new("bob")).unwrap().debt,
             UsdcAmount(0)
         );
+    }
+
+    #[test]
+    fn protocol_round_trips_through_json() {
+        let mut protocol = funded_protocol();
+        protocol
+            .borrow(&UserId::new("bob"), UsdcAmount::from_usdc(500))
+            .unwrap();
+        let json = serde_json::to_string(&protocol).unwrap();
+        // User ids become plain JSON keys.
+        assert!(json.contains("\"bob\""));
+        let loaded: Protocol = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, protocol);
     }
 }
