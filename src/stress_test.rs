@@ -24,6 +24,10 @@ pub const START_PRICE: Price = Price(200_000);
 /// Seed used by the API, so the same request always gives the same report.
 pub const DEFAULT_SEED: u64 = 42;
 
+/// Largest number of crashes the API accepts in one request. 10 000 crashes
+/// take a few seconds, so this keeps a single request under about a minute.
+pub const MAX_SCENARIOS: usize = 100_000;
+
 /// Smallest and largest total drop of a random crash.
 const MIN_DROP: Bps = Bps(1_000);
 const MAX_DROP: Bps = Bps(7_000);

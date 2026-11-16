@@ -27,6 +27,8 @@ pub enum LendingError {
     ScenarioNotFound(String),
     /// A replay is already in progress.
     ReplayAlreadyRunning,
+    /// The stress test asks for more scenarios than the given maximum.
+    TooManyScenarios(usize),
     /// A JSON file could not be read or written.
     Storage(String),
 }
@@ -47,6 +49,9 @@ impl fmt::Display for LendingError {
             LendingError::BorrowingPaused => write!(f, "borrowing is paused by the risk guardian"),
             LendingError::ScenarioNotFound(id) => write!(f, "scenario not found: {id}"),
             LendingError::ReplayAlreadyRunning => write!(f, "a replay is already running"),
+            LendingError::TooManyScenarios(max) => {
+                write!(f, "too many scenarios, the maximum is {max}")
+            }
             LendingError::Storage(message) => write!(f, "storage error: {message}"),
         }
     }
