@@ -16,6 +16,7 @@ use crate::guardian::Guardian;
 use crate::protocol::Protocol;
 
 pub mod lending;
+pub mod risk;
 
 /// State shared by all the HTTP handlers.
 ///
@@ -65,7 +66,10 @@ impl AppState {
 
 /// Builds the router with every route of the API.
 pub fn router(state: AppState) -> Router {
-    Router::new().merge(lending::routes()).with_state(state)
+    Router::new()
+        .merge(lending::routes())
+        .merge(risk::routes())
+        .with_state(state)
 }
 
 /// Body of every error response: `{ "error": "<message>" }`.
