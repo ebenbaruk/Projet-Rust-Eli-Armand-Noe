@@ -6,6 +6,7 @@ pub mod api;
 pub mod error;
 pub mod guardian;
 pub mod interest;
+pub mod liquidation;
 pub mod persistence;
 pub mod protocol;
 pub mod report;

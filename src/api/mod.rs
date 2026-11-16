@@ -89,6 +89,7 @@ pub fn status_of(error: &LendingError) -> StatusCode {
         | LendingError::InsufficientLiquidity
         | LendingError::NothingToRepay
         | LendingError::PositionHealthy
+        | LendingError::NothingToLiquidate
         | LendingError::BorrowingPaused => StatusCode::UNPROCESSABLE_ENTITY,
         LendingError::ReplayAlreadyRunning => StatusCode::CONFLICT,
         LendingError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,

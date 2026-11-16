@@ -21,6 +21,8 @@ pub enum LendingError {
     NothingToRepay,
     /// The position cannot be liquidated because its health factor is at least 1.
     PositionHealthy,
+    /// The position has no collateral left for a liquidator to seize.
+    NothingToLiquidate,
     /// The risk guardian has paused new borrows.
     BorrowingPaused,
     /// No crash scenario has this id.
@@ -45,6 +47,9 @@ impl fmt::Display for LendingError {
             LendingError::NothingToRepay => write!(f, "this position has no debt to repay"),
             LendingError::PositionHealthy => {
                 write!(f, "position is healthy and cannot be liquidated")
+            }
+            LendingError::NothingToLiquidate => {
+                write!(f, "position has no collateral left to liquidate")
             }
             LendingError::BorrowingPaused => write!(f, "borrowing is paused by the risk guardian"),
             LendingError::ScenarioNotFound(id) => write!(f, "scenario not found: {id}"),

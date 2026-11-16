@@ -159,7 +159,7 @@ Le liquidateur choisit un montant de dette à rembourser, plafonné à 50 % de l
 collatéral saisi = montant remboursé × (1 + prime) / prix
 ```
 
-Si le collatéral restant est inférieur à ce montant, le liquidateur reçoit tout le collatéral restant.
+Si le collatéral restant est inférieur à ce montant, le liquidateur reçoit tout le collatéral restant et ne rembourse que sa valeur, prime déduite (`valeur du collatéral / (1 + prime)`). Le reste de la dette devient de la dette irrécouvrable. Une position sans collatéral ne peut plus être liquidée (`NothingToLiquidate`).
 
 Une liquidation sur une position saine est refusée avec l'erreur `PositionHealthy`.
 
@@ -354,6 +354,7 @@ Toutes les fonctions de la bibliothèque qui peuvent échouer renvoient `Result<
 | `InsufficientLiquidity` | le pool ne contient pas assez d'USDC |
 | `NothingToRepay` | remboursement sans dette |
 | `PositionHealthy` | liquidation d'une position saine |
+| `NothingToLiquidate` | liquidation d'une position sans collatéral |
 | `BorrowingPaused` | emprunt refusé par le gardien |
 | `ScenarioNotFound` | identifiant de scénario inconnu |
 | `ReplayAlreadyRunning` | un rejeu est déjà en cours |
