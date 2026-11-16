@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod error;
+pub mod guardian;
 pub mod interest;
 pub mod persistence;
 pub mod protocol;
