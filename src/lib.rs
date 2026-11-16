@@ -9,4 +9,5 @@ pub mod interest;
 pub mod persistence;
 pub mod protocol;
 pub mod report;
+pub mod stress_test;
 pub mod types;
