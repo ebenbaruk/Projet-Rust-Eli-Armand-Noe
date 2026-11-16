@@ -162,23 +162,36 @@ Sur 8 cœurs, le gain est de ×4,7 et non ×8. Deux raisons probables : le proce
 
 #### Flamegraph
 
-[`docs/flamegraph-stress-test.svg`](docs/flamegraph-stress-test.svg) profile 3 000 scénarios sur 1 thread. On le régénère avec :
+[`docs/flamegraph-stress-test.svg`](docs/flamegraph-stress-test.svg) profile le benchmark `stress_test/threads/1`. Il est produit avec les outils standard : `sample`, l'échantillonneur intégré à macOS, et [inferno](https://github.com/jonhoo/inferno), les scripts de flamegraph de Brendan Gregg portés en Rust.
+
+Sur macOS, `cargo flamegraph` passe par `xctrace`, qui demande Xcode complet. `sample`, lui, n'a besoin ni de Xcode ni des droits root.
 
 ```bash
-CARGO_PROFILE_RELEASE_DEBUG=true cargo run --release --example flamegraph
+cargo install inferno rustfilt
+BIN=$(CARGO_PROFILE_BENCH_DEBUG=true cargo bench --bench stress_test --no-run 2>&1 \
+  | grep -o 'target/release/deps/stress_test-[0-9a-f]*')
+$BIN --bench --profile-time 40 stress_test/threads/1 > /dev/null & sleep 5
+sample $! 30 1 -file /tmp/stress.sample
+rustfilt < /tmp/stress.sample | inferno-collapse-sample \
+  | sed -E 's/stress_test-[0-9a-f]+`//g' \
+  | inferno-flamegraph --title "CrashLend : stress test sur 1 thread (cargo bench)" \
+  > docs/flamegraph-stress-test.svg
 ```
 
-L'exemple utilise `pprof`, qui échantillonne le programme de l'intérieur. Contrairement à `cargo flamegraph` (dtrace ou perf), il ne demande pas de droits root.
+Sur Linux, `cargo flamegraph` passe par `perf` : `cargo flamegraph --bench stress_test -- --bench --profile-time 30 stress_test/threads/1`.
+
+`sample` ne voit pas les fonctions inlinées : `liquidate`, `health_factor` et `buy_the_dip` apparaissent sous `simulate`.
 
 | Fonction | Part du temps | Cause |
 |---|---|---|
-| `Protocol::accrue_interest` | ~36 % | une division et un modulo `u128` par position et par minute |
-| `liquidate` → `Position::health_factor` | ~35 % | facteur de santé de chaque position à chaque minute, dont 21 % dans la division `u128` (`__udivti3`) |
-| `buy_the_dip` → `Protocol::position` | ~25 % | recherche dans la `BTreeMap` par comparaison de `String`, pour chaque acheteur et à chaque minute |
-| `Guardian::observe` | < 1 % | négligeable |
+| `Protocol::accrue_interest` | 43,5 % | une division `u128` par position et par minute. Dans ces 43,5 %, `current_rate` pèse 13,5 % : `total_debt` reparcourt toutes les positions à chaque minute pour calculer l'utilisation. |
+| `simulate` (code inliné) | 30,4 % | surtout le facteur de santé de chaque position, à chaque minute (`liquidate`) |
+| `memcmp` | 20,3 % | comparaisons de `String` dans la `BTreeMap`, quand `buy_the_dip` cherche la position de chaque acheteur à chaque minute |
+| `Guardian::observe` | 2,9 % | maximum sur les 60 derniers prix |
 
 Pistes d'amélioration :
 
+- **Ne plus chercher les acheteurs qui ont déjà emprunté**, en gardant un drapeau par acheteur. On peut aussi stocker les positions dans un `Vec` indexé plutôt que dans une `BTreeMap<UserId, _>`. Cela supprime les 20 % de `memcmp`.
+- **Tenir la dette totale à jour dans `Protocol`** à chaque emprunt, remboursement et intérêt, au lieu de la recalculer. Cela supprime le second parcours des positions à chaque minute.
 - **`is_liquidatable` sans division.** Comparer `valeur du collatéral × seuil < dette × 10 000` donne le même résultat avec une seule multiplication.
-- **Ne plus chercher les acheteurs qui ont déjà emprunté**, en gardant un drapeau par acheteur. Sinon, stocker les positions dans un `Vec` indexé plutôt que dans une `BTreeMap<UserId, _>`.
-- **Le gardien n'est pas à optimiser.** Le maximum sur 60 prix ne coûte presque rien, donc une file monotone n'apporterait rien de mesurable.
+- **Le gardien est une priorité faible.** Une file monotone rendrait le maximum en O(1), mais elle ne peut pas gagner plus que ses 3 %.
