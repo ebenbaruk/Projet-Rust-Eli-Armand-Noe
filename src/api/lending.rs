@@ -200,7 +200,8 @@ pub async fn get_price(State(state): State<AppState>) -> Json<PriceView> {
 }
 
 /// POST /price: sets the price of ETH by hand, to test liquidations without
-/// a replay. Returns the new price, or `ZeroAmount` for a zero price.
+/// a replay. The guardian sees it as one more minute. Returns the new price,
+/// or `ZeroAmount` for a zero price.
 pub async fn set_price(
     State(state): State<AppState>,
     Json(request): Json<PriceRequest>,
@@ -210,6 +211,7 @@ pub async fn set_price(
     }
     let mut protocol = state.lock();
     protocol.price = request.price;
+    state.lock_guardian().observe(&mut protocol);
     Ok(Json(PriceView {
         price: protocol.price,
     }))

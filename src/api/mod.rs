@@ -12,17 +12,23 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::error::LendingError;
+use crate::guardian::Guardian;
 use crate::protocol::Protocol;
 
 pub mod lending;
+pub mod risk;
 
 /// State shared by all the HTTP handlers.
 ///
 /// It is cloned for every request, which only copies the `Arc` pointers.
+/// When both locks are needed, the protocol is always locked first, so two
+/// handlers can never wait on each other.
 #[derive(Clone)]
 pub struct AppState {
     /// The lending pool. The replay task and the bots share the same pointer.
     pub protocol: Arc<Mutex<Protocol>>,
+    /// The risk guardian, fed with each new price.
+    pub guardian: Arc<Mutex<Guardian>>,
     /// File used by `/save` and `/load`.
     pub state_file: PathBuf,
 }
@@ -31,10 +37,11 @@ pub struct AppState {
 pub const STATE_FILE: &str = "state.json";
 
 impl AppState {
-    /// Wraps a protocol so it can be shared between tasks.
+    /// Wraps a protocol so it can be shared between tasks. The guardian starts enabled.
     pub fn new(protocol: Protocol) -> AppState {
         AppState {
             protocol: Arc::new(Mutex::new(protocol)),
+            guardian: Arc::new(Mutex::new(Guardian::new(true))),
             state_file: PathBuf::from(STATE_FILE),
         }
     }
@@ -48,11 +55,21 @@ impl AppState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    /// Locks the guardian. Same rules as `lock`, and always after it.
+    pub fn lock_guardian(&self) -> MutexGuard<'_, Guardian> {
+        self.guardian
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// Builds the router with every route of the API.
 pub fn router(state: AppState) -> Router {
-    Router::new().merge(lending::routes()).with_state(state)
+    Router::new()
+        .merge(lending::routes())
+        .merge(risk::routes())
+        .with_state(state)
 }
 
 /// Body of every error response: `{ "error": "<message>" }`.
