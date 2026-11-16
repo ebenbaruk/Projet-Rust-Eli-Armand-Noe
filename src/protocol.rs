@@ -168,6 +168,16 @@ impl Protocol {
         UsdcAmount(total)
     }
 
+    /// Returns the debt that the collateral no longer covers, summed over every
+    /// position (section 4.6). The protocol survives a crash if it is zero.
+    pub fn total_bad_debt(&self) -> UsdcAmount {
+        let mut total = 0u64;
+        for position in self.positions.values() {
+            total = total.saturating_add(position.bad_debt(self.price).0);
+        }
+        UsdcAmount(total)
+    }
+
     /// Returns the share of the pool that is currently lent out.
     pub fn utilization(&self) -> Bps {
         interest::utilization(self.total_debt(), self.cash)
@@ -457,6 +467,19 @@ mod tests {
             protocol.position(&UserId::new("bob")).unwrap().debt,
             UsdcAmount(0)
         );
+    }
+
+    #[test]
+    fn bad_debt_appears_when_the_price_crashes() {
+        let mut protocol = funded_protocol();
+        protocol
+            .borrow(&UserId::new("bob"), UsdcAmount::from_usdc(1_500))
+            .unwrap();
+        assert_eq!(protocol.total_bad_debt(), UsdcAmount(0));
+
+        // 1 ETH now covers only 1 000 of the 1 500 USDC owed.
+        protocol.price = Price::from_usdc(1_000);
+        assert_eq!(protocol.total_bad_debt(), UsdcAmount::from_usdc(500));
     }
 
     #[test]
