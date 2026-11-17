@@ -45,8 +45,12 @@ Les montants sont des entiers : les USDC sont en centimes, l'ETH en gwei et le p
 | `interest.rs` | modèle de taux et intérêts |
 | `persistence.rs` | sauvegarde et chargement de l'état en JSON |
 | `guardian.rs` | gardien du risque : baisse sur 60 minutes et restrictions d'emprunt |
+| `liquidation.rs` | règle de liquidation d'une position |
+| `scenario.rs` | chargement des krachs historiques de `data/` |
+| `replay.rs` | rejeu d'un krach, minute par minute |
+| `bots.rs` | bots liquidateurs concurrents |
 | `stress_test.rs` | krachs aléatoires rejoués sur plusieurs threads |
-| `report.rs` | agrégation des résultats et rapport du stress test |
+| `report.rs` | rapports du stress test et du rejeu |
 | `api/` | routeur axum, état partagé et routes |
 
 ## Protocole de prêt
@@ -91,6 +95,97 @@ Un `std::sync::Mutex` suffit : le verrou n'est jamais conservé pendant un `.awa
 | `accrue_interest_10000_positions` | ajouter une minute d'intérêt à chaque position | environ 85 µs |
 
 Ces deux boucles tournent à chaque minute simulée : elles déterminent la vitesse d'un rejeu. Pour l'améliorer, on pourrait stocker les positions dans un `Vec` plutôt qu'une `BTreeMap`, ce qui rend le parcours plus favorable au cache.
+
+## Krachs et liquidations
+
+### Données
+
+`data/` contient le prix de l'ETH minute par minute pendant trois krachs, au format de la section 5.2 de la spécification :
+
+| Scénario | Période | Minutes | Vrai prix (départ → plus bas) | Baisse max |
+|---|---|---|---|---|
+| `black-thursday` | 12 mars 2020 | 1 440 | 195,02 → 101,37 USDC | −48 % |
+| `luna` | 9 au 12 mai 2022 | 5 760 | 2 524,06 → 1 800,01 USDC | −29 % |
+| `ftx` | 7 au 10 novembre 2022 | 5 760 | 1 569,26 → 1 076,24 USDC | −31 % |
+
+Ces prix sont les cours de clôture des bougies d'une minute ETH/USDT de l'API publique de Binance. `scripts/fetch_scenarios.sh` les télécharge une seule fois avec `curl` et `jq`, et s'arrête si une minute manque. Le serveur ne dépend donc d'aucun service extérieur. `scenario.rs` n'accepte que les identifiants connus : un identifiant reçu par l'API ne peut pas viser un autre fichier du disque.
+
+### Routes
+
+| Méthode | Route | Effet |
+|---|---|---|
+| GET | `/scenarios` | scénarios disponibles, avec leur durée et leur vrai prix de départ |
+| POST | `/replay/{id}` | lance le rejeu en arrière-plan et répond 202 tout de suite (409 si un rejeu est déjà en cours) |
+| GET | `/liquidations` | liquidations du rejeu en cours ou du dernier : minute, bot, utilisateur, dette remboursée, collatéral saisi |
+| GET | `/report` | rapport du dernier rejeu terminé, ou `null` |
+
+### Démonstration
+
+```bash
+H='Content-Type: application/json'
+curl -X POST localhost:3000/supply  -H "$H" -d '{"user":"alice","amount":10000000}'   # 100 000 USDC
+curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"bob","amount":1000000000}'   # 1 ETH
+curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"carol","amount":1000000000}'
+curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"dave","amount":1000000000}'
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"bob","amount":140000}'       # 1 400 USDC
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"carol","amount":120000}'     # 1 200 USDC
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"dave","amount":100000}'      # 1 000 USDC
+curl -X POST localhost:3000/replay/black-thursday                                     # environ 15 s
+curl localhost:3000/liquidations                                                      # pendant ou après
+curl localhost:3000/report                                                            # une fois terminé
+```
+
+Le rapport donne les prix rejoués, la baisse maximale, le nombre de liquidations, la dette remboursée, la dette irrécouvrable finale et le détail par bot. Avec trois emprunteurs à 1 400, 1 200 et 1 000 USDC, on obtient par exemple 11 liquidations (8 pour `fast`, 3 pour `average`) et aucune dette irrécouvrable. La répartition entre les bots change d'un rejeu à l'autre, puisqu'ils sont en concurrence.
+
+### Règle de liquidation
+
+`liquidation::liquidate` applique la section 4.5 à une position. C'est une fonction synchrone, utilisée à la fois par les bots et par le stress test.
+
+- Elle refuse une position saine (`PositionHealthy`), un montant nul et un utilisateur inconnu.
+- Elle rembourse au plus 50 % de la dette et donne au liquidateur `remboursé × 1,05 / prix` en ETH.
+- **Quand le collatéral ne suffit plus, on suit Aave V3** (`_calculateAvailableCollateralToLiquidate` dans `LiquidationLogic.sol`) : le liquidateur prend tout le collatéral restant mais ne rembourse que sa valeur, prime déduite. Le reste de la dette reste visible comme dette irrécouvrable. S'il remboursait quand même 50 % de la dette, il paierait pour du collatéral inexistant, et la dette irrécouvrable disparaîtrait artificiellement.
+- Une position sans collatéral n'est plus liquidable (`NothingToLiquidate`, l'équivalent de `CollateralCannotBeLiquidated` chez Aave), et sa dette ne produit plus d'intérêts.
+
+Ce que l'on ne reprend pas d'Aave : le *close factor* à 100 % sous un facteur de santé de 0,95, la règle anti-poussière et le compteur `deficit`. La dette irrécouvrable est calculée position par position (`Protocol::total_bad_debt`), ce qui donne le même chiffre.
+
+### Rejeu et bots
+
+À chaque minute, le rejeu met le prix à jour, ajoute une minute d'intérêts et informe le gardien, puis attend 10 ms. Il envoie la minute courante aux bots par un canal `tokio::sync::watch`. À la fin, il leur envoie `Finished`, attend leur arrêt et enregistre le rapport.
+
+Trois bots tournent en parallèle du rejeu :
+
+| Bot | Temps de réaction | Soit |
+|---|---|---|
+| `fast` | 20 ms | 2 minutes simulées |
+| `average` | 50 ms | 5 minutes simulées |
+| `slow` | 150 ms | 15 minutes simulées |
+
+Chaque bot repère les positions liquidables, attend son temps de réaction, puis tente de les liquider en demandant toute la dette (la règle la ramène à 50 %). Pendant son attente, un bot plus rapide peut avoir pris la même position, ou le prix peut être remonté : la tentative est alors comptée comme ratée (`missed`). C'est le fonctionnement d'une vraie blockchain, où la transaction la plus rapide l'emporte.
+
+**Mise à l'échelle des prix.** Les scénarios contiennent les vrais prix (195 USDC au départ du Black Thursday), alors que le pool démarre à 2 000 USDC. Rejouer ces prix tels quels ferait chuter l'ETH de 90 % dès la première minute. Le rejeu multiplie donc chaque prix par `prix courant / premier prix du scénario` : le krach garde exactement sa forme (−48 % au plus bas pour le Black Thursday), quel que soit le prix de départ. Les liquidations et le gardien ne dépendent que de ces variations, pas du niveau du prix.
+
+### Async ou threads
+
+- **Le rejeu et les bots sont des tâches tokio.** Ils passent presque tout leur temps à attendre (`tokio::time::sleep`). Une tâche en attente ne coûte presque rien, alors qu'un thread système garderait sa pile et sa place dans l'ordonnanceur pour ne rien faire, soit 4 threads bloqués par rejeu.
+- **La route `/replay` répond tout de suite.** Elle lance le rejeu avec `tokio::spawn` et ne l'attend pas : le rapport est rangé dans l'état partagé à la fin.
+
+### État partagé
+
+Le rejeu, les bots et les routes partagent le même `AppState`. Son nouvel état `replay` (rejeu en cours, historique, dernier rapport) a son propre `Mutex`. Les verrous sont toujours pris dans le même ordre : protocole, gardien, puis rejeu. Deux tâches ne peuvent donc jamais s'attendre l'une l'autre. `replay::start` tient le protocole et le rejeu en même temps : deux requêtes simultanées ne peuvent pas lancer deux rejeux.
+
+Aucun verrou n'est gardé pendant une attente. Le compilateur le garantit d'ailleurs : un `std::sync::MutexGuard` n'est pas `Send`, donc une tâche lancée avec `tokio::spawn` qui le garderait pendant un `.await` ne compilerait pas.
+
+### Benchmark
+
+`cargo bench --bench replay` rejoue le Black Thursday complet (1 440 minutes) sans délai entre les pas, sur un pool de 1 000 emprunteurs. Il mesure le travail fait à chaque minute : changer le prix, ajouter les intérêts de chaque position et informer le gardien. Les bots sont laissés de côté : ils attendent un temps fixe, donc avec eux le bench mesurerait l'horloge et non le code.
+
+| Benchmark | Temps | Par minute simulée |
+|---|---|---|
+| `replay_black_thursday_1000_positions` | 7,7 ms | environ 5,4 µs |
+
+**Ce que le bench a révélé.** La première mesure donnait 1,69 s, soit 1,2 ms par minute alors que le calcul en prend quelques microsecondes. La minuterie de tokio a une résolution de 1 ms : même `sleep(Duration::ZERO)` attend le tic suivant. Sans délai, le rejeu cède donc simplement la main aux autres tâches (`tokio::task::yield_now`), et le rejeu est 219 fois plus rapide. Le test d'intégration en profite aussi.
+
+Pendant la démo, avec 10 ms par minute, le calcul représente moins de 0,1 % du temps : le rejeu passe son temps à attendre, ce qui confirme le choix d'une tâche tokio. Pour accélérer le calcul lui-même, les pistes sont celles du flamegraph du stress test : `accrue_interest` recalcule la dette totale à chaque minute, et les positions sont rangées dans une `BTreeMap` plutôt qu'un `Vec`.
 
 ## Gardien du risque et stress test
 
