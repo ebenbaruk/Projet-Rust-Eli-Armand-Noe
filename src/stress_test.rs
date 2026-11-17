@@ -5,7 +5,7 @@
 //! system threads with `std::thread::scope`. As an async task, it would block a
 //! worker of the tokio runtime for the whole run.
 
-use std::ops::Range;
+use std::ops::{Bound, Range};
 use std::thread;
 use std::time::Instant;
 
@@ -14,6 +14,7 @@ use rand::{RngExt, SeedableRng};
 
 use crate::error::LendingError;
 use crate::guardian::Guardian;
+use crate::liquidation;
 use crate::protocol::Protocol;
 use crate::report::{StressReport, Tally};
 use crate::types::{BPS_SCALE, Bps, EthAmount, Params, Price, UsdcAmount, UserId, to_u64};
@@ -147,11 +148,7 @@ pub fn simulate(portfolio: &Portfolio, prices: &[Price], guardian_enabled: bool)
         liquidate(&mut protocol);
     }
 
-    let mut bad_debt = 0u64;
-    for position in protocol.positions.values() {
-        bad_debt = bad_debt.saturating_add(position.bad_debt(protocol.price).0);
-    }
-    UsdcAmount(bad_debt)
+    protocol.total_bad_debt()
 }
 
 /// A dip buyer without debt borrows the most the protocol allows right now.
@@ -168,27 +165,39 @@ fn buy_the_dip(protocol: &mut Protocol, user: &UserId) {
     let _ = protocol.borrow(user, amount);
 }
 
-/// Simplified, synchronous liquidation (section 4.5) of the first unhealthy
-/// positions, up to `LIQUIDATIONS_PER_MINUTE`.
+/// Liquidates the first unhealthy positions, in the order of the `BTreeMap`,
+/// with the rule of section 4.5, up to `LIQUIDATIONS_PER_MINUTE`.
 fn liquidate(protocol: &mut Protocol) {
-    let price = protocol.price;
-    let params = protocol.params;
-    let unhealthy = protocol
-        .positions
-        .values_mut()
-        .filter(|position| position.is_liquidatable(price, params.liquidation_threshold))
-        .take(LIQUIDATIONS_PER_MINUTE);
-
-    for position in unhealthy {
-        let repaid = params.close_factor.apply_to(position.debt);
-        let with_bonus = repaid.0 + params.liquidation_bonus.apply_to(repaid).0;
-        let seized = UsdcAmount(with_bonus)
-            .to_eth(price)
-            .min(position.collateral);
-        position.debt.0 -= repaid.0;
-        position.collateral.0 -= seized.0;
-        protocol.cash.0 = protocol.cash.0.saturating_add(repaid.0);
+    let mut liquidated = 0;
+    let mut last_tried = None;
+    while liquidated < LIQUIDATIONS_PER_MINUTE {
+        let Some((user, debt)) = next_target(protocol, last_tried.as_ref()) else {
+            return;
+        };
+        // A failed attempt does not use a slot: a real liquidator would not
+        // send a liquidation that repays nothing (`NothingToLiquidate`).
+        if liquidation::liquidate(protocol, &user, debt).is_ok() {
+            liquidated += 1;
+        }
+        last_tried = Some(user);
     }
+}
+
+/// Returns the first unhealthy position after `after`, with its debt.
+///
+/// As for the bots, positions without collateral are skipped: there is
+/// nothing left to seize.
+fn next_target(protocol: &Protocol, after: Option<&UserId>) -> Option<(UserId, UsdcAmount)> {
+    let price = protocol.price;
+    let threshold = protocol.params.liquidation_threshold;
+    let start = after.map_or(Bound::Unbounded, Bound::Excluded);
+    protocol
+        .positions
+        .range((start, Bound::Unbounded))
+        .find(|(_, position)| {
+            position.collateral.0 > 0 && position.is_liquidatable(price, threshold)
+        })
+        .map(|(user, position)| (user.clone(), position.debt))
 }
 
 /// Replays the crashes of `indexes`, each with and without the guardian.
@@ -272,38 +281,43 @@ mod tests {
         assert_eq!(simulate(&portfolio(), &prices, false), UsdcAmount(0));
     }
 
-    #[test]
-    fn liquidation_repays_half_the_debt_with_a_bonus() {
+    /// A pool at 1 500 USDC per ETH where each user owes 1 500 USDC against
+    /// 1 ETH, so every position can be liquidated.
+    fn unhealthy_pool(users: &[&str]) -> Protocol {
         let mut protocol = Protocol::new(Params::default(), Price::from_usdc(2_000));
-        let bob = UserId::new("bob");
         protocol
-            .supply(&UserId::new("alice"), UsdcAmount::from_usdc(10_000))
+            .supply(&UserId::new("lender"), UsdcAmount::from_usdc(100_000))
             .unwrap();
-        protocol.deposit(&bob, EthAmount::from_eth(1)).unwrap();
-        protocol.borrow(&bob, UsdcAmount::from_usdc(1_500)).unwrap();
+        for name in users {
+            let user = UserId::new(name);
+            protocol.deposit(&user, EthAmount::from_eth(1)).unwrap();
+            protocol
+                .borrow(&user, UsdcAmount::from_usdc(1_500))
+                .unwrap();
+        }
         protocol.price = Price::from_usdc(1_500);
-
-        liquidate(&mut protocol);
-
-        let position = protocol.position(&bob).unwrap();
-        assert_eq!(position.debt, UsdcAmount::from_usdc(750));
-        // 750 USDC + 5 % = 787.5 USDC of ETH at 1 500 USDC = 0.525 ETH seized.
-        assert_eq!(position.collateral, EthAmount(475_000_000));
+        protocol
     }
 
     #[test]
-    fn liquidation_takes_at_most_the_collateral() {
-        let mut protocol = Protocol::new(Params::default(), Price::from_usdc(2_000));
-        let bob = UserId::new("bob");
-        protocol
-            .supply(&UserId::new("alice"), UsdcAmount::from_usdc(10_000))
-            .unwrap();
-        protocol.deposit(&bob, EthAmount::from_eth(1)).unwrap();
-        protocol.borrow(&bob, UsdcAmount::from_usdc(1_500)).unwrap();
-        protocol.price = Price::from_usdc(500);
+    fn positions_with_nothing_to_seize_do_not_take_a_slot() {
+        let mut protocol = unhealthy_pool(&["dust", "empty", "user-1", "user-2", "user-3"]);
+        // Left behind by liquidations that seized all the ETH, or all but
+        // 1 gwei, which is worth less than a cent. Both names sort first.
+        let dust = UserId::new("dust");
+        let empty = UserId::new("empty");
+        protocol.positions.get_mut(&dust).unwrap().collateral = EthAmount(1);
+        protocol.positions.get_mut(&empty).unwrap().collateral = EthAmount(0);
 
         liquidate(&mut protocol);
 
-        assert_eq!(protocol.position(&bob).unwrap().collateral, EthAmount(0));
+        let debt = |name: &str| protocol.position(&UserId::new(name)).unwrap().debt;
+        // Nobody repays debt that buys no collateral: the bad debt stays.
+        assert_eq!(debt("dust"), UsdcAmount::from_usdc(1_500));
+        assert_eq!(debt("empty"), UsdcAmount::from_usdc(1_500));
+        // The two slots of the minute go to the next unhealthy positions.
+        assert_eq!(debt("user-1"), UsdcAmount::from_usdc(750));
+        assert_eq!(debt("user-2"), UsdcAmount::from_usdc(750));
+        assert_eq!(debt("user-3"), UsdcAmount::from_usdc(1_500));
     }
 }

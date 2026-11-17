@@ -112,7 +112,7 @@ Le stress test rejoue N krachs aléatoires sur le même portefeuille, une fois s
 
 - **Krach :** une chute en ligne droite de 10 à 70 % sur une durée de 30 minutes à 24 heures, avec un bruit de ±0,5 % par minute.
 - **Portefeuille :** 80 emprunteurs entre 30 et 70 % de LTV, et 20 « acheteurs de baisse ». Ces derniers empruntent le maximum autorisé une fois que le prix a baissé de 2,5 %, 5 %, … ou 50 %.
-- **Liquidation simplifiée :** chaque minute, les liquidateurs remboursent 50 % de la dette d'au plus 2 positions et saisissent le collatéral avec une prime de 5 %. Sans cette limite de capacité, la liquidation suit toujours un krach progressif et aucune dette irrécouvrable n'apparaît. C'est précisément ce qui a manqué lors du Black Thursday.
+- **Liquidation synchrone :** chaque minute, les liquidateurs liquident au plus 2 positions avec la règle de la section 4.5 (`liquidation.rs`), qui rembourse jusqu'à 50 % de la dette contre du collatéral avec une prime de 5 %. Une position qui n'a plus rien à saisir ne prend pas de place. Sans cette limite de capacité, la liquidation suit toujours un krach progressif et aucune dette irrécouvrable n'apparaît. C'est précisément ce qui a manqué lors du Black Thursday.
 - **Survie :** le protocole survit si la dette irrécouvrable est nulle à la fin du krach.
 
 Résultat avec 10 000 scénarios et la graine 42 :
@@ -123,6 +123,8 @@ Résultat avec 10 000 scénarios et la graine 42 :
 | Dette irrécouvrable moyenne | 1 536,59 USDC | 939,41 USDC |
 
 Le gardien réduit la dette irrécouvrable de 39 %, mais il améliore peu le taux de survie. Dans les krachs les plus violents, la perte vient des positions ouvertes avant le krach, que le gardien ne touche pas.
+
+Aucune des 2 888 901 liquidations des 20 000 rejeux ne vise une position déjà insolvable, et aucune n'épuise son collatéral. La dette irrécouvrable vient des positions que les liquidateurs n'atteignent pas à temps : elles deviennent insolvables en attendant leur tour. Le plafond au collatéral restant de la section 4.5 ne change donc pas ces chiffres.
 
 ### Routes
 
