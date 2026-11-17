@@ -201,6 +201,8 @@ Pendant la démo, avec 10 ms par minute, le calcul représente moins de 0,1 % du
 
 Les positions existantes ne sont jamais modifiées. Le gardien agit seulement par deux champs de `Protocol` : `borrowing_paused` et `max_ltv_override`. `Protocol` ne dépend donc pas du gardien.
 
+Ces deux champs sont sauvegardés avec le reste de `Protocol`. Après un `/load`, le gardien observe donc le prix rechargé, comme après `POST /price`. Sans cela, le fichier ramènerait les restrictions du moment de la sauvegarde, même avec un gardien désactivé depuis, et le gardien ne verrait pas l'écart entre le prix rechargé et ceux de la dernière heure.
+
 ### Stress test
 
 Le stress test rejoue N krachs aléatoires sur le même portefeuille, une fois sans gardien et une fois avec.
