@@ -147,7 +147,7 @@ async fn run(
         clock.send_replace(Clock::Running { minute });
         // No lock is held here: the bots and the HTTP handlers can work
         // while the replay waits.
-        tokio::time::sleep(config.step_delay).await;
+        wait_for_next_step(config.step_delay).await;
     }
 
     clock.send_replace(Clock::Finished);
@@ -172,6 +172,18 @@ fn step(state: &AppState, price: Price) {
     protocol.price = price;
     protocol.accrue_interest();
     state.lock_guardian().observe(&mut protocol);
+}
+
+/// Waits `delay` before the next step.
+async fn wait_for_next_step(delay: Duration) {
+    if delay.is_zero() {
+        // The timer of tokio ticks every millisecond, so even a zero sleep
+        // waits about 1 ms. Without delay, the replay only lets the other
+        // tasks run.
+        tokio::task::yield_now().await;
+    } else {
+        tokio::time::sleep(delay).await;
+    }
 }
 
 #[cfg(test)]
