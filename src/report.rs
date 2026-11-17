@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::bots::BotReport;
 use crate::protocol::Protocol;
-use crate::types::{Price, UsdcAmount};
+use crate::types::{BPS_SCALE, Bps, Price, UsdcAmount, to_u64};
 
 /// Outcomes of many runs made with the same rules.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -93,10 +93,14 @@ pub struct ReplayReport {
     pub scenario: String,
     /// Number of simulated minutes.
     pub minutes: usize,
-    /// Price of ETH at the first minute.
+    /// Price of ETH at the first minute. The scenario is rescaled so that it
+    /// starts at the price of the pool.
     pub start_price: Price,
     /// Lowest price of ETH during the replay.
     pub lowest_price: Price,
+    /// Drop from the start to the lowest price. It is the same as during the
+    /// real crash, whatever the starting price.
+    pub max_drop: Bps,
     /// Price of ETH at the last minute.
     pub end_price: Price,
     /// Liquidations made by all the bots.
@@ -127,11 +131,14 @@ impl ReplayReport {
         }
         // An empty replay did not move the price: the current one is used.
         let current = protocol.price;
+        let start_price = prices.first().copied().unwrap_or(current);
+        let lowest_price = prices.iter().min().copied().unwrap_or(current);
         ReplayReport {
             scenario: scenario.to_string(),
             minutes: prices.len(),
-            start_price: prices.first().copied().unwrap_or(current),
-            lowest_price: prices.iter().min().copied().unwrap_or(current),
+            start_price,
+            lowest_price,
+            max_drop: drop_between(start_price, lowest_price),
             end_price: prices.last().copied().unwrap_or(current),
             liquidations,
             repaid: UsdcAmount(repaid),
@@ -139,6 +146,12 @@ impl ReplayReport {
             bots,
         }
     }
+}
+
+/// Returns how much `low` is below `high`, as a share of `high`.
+fn drop_between(high: Price, low: Price) -> Bps {
+    let fall = high.0.saturating_sub(low.0) as u128 * BPS_SCALE as u128;
+    Bps(to_u64(fall.checked_div(high.0 as u128).unwrap_or(0)))
 }
 
 #[cfg(test)]
@@ -200,6 +213,8 @@ mod tests {
         assert_eq!(report.minutes, 3);
         assert_eq!(report.start_price, Price::from_usdc(2_000));
         assert_eq!(report.lowest_price, Price::from_usdc(1_200));
+        // From 2 000 down to 1 200 USDC: -40 %.
+        assert_eq!(report.max_drop, Bps(4_000));
         assert_eq!(report.end_price, Price::from_usdc(1_500));
         assert_eq!(report.liquidations, 3);
         assert_eq!(report.repaid, UsdcAmount(400));

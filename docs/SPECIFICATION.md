@@ -220,6 +220,7 @@ Les prix sont téléchargés une seule fois depuis l'API publique et gratuite de
 
 ### 5.3 Rejeu
 
+- Le rejeu commence au prix courant du protocole. Chaque prix du scénario est multiplié par `prix courant / premier prix du scénario` : la forme du krach est conservée (−48 % au plus bas pour le Black Thursday), quel que soit le prix de départ du pool. Sans cela, des positions ouvertes à 2 000 USDC verraient l'ETH tomber à 195 USDC dès la première minute. Le rapport indique la baisse maximale en pourcentage.
 - Le rejeu avance d'un pas de temps toutes les 10 ms par défaut, ce qui fait défiler une journée en environ 15 secondes.
 - À chaque pas, le rejeu met à jour le prix, accumule les intérêts et informe le gardien.
 - Pendant ce temps, trois bots liquidateurs tournent en parallèle. Chacun vérifie régulièrement les positions et liquide celles dont le facteur de santé est inférieur à 1. Les bots ont des délais de réaction différents. Quand deux bots visent la même position, le premier l'emporte et le second reçoit `PositionHealthy` ou une dette déjà réduite.
@@ -332,13 +333,13 @@ Toutes les requêtes et réponses sont en JSON. En cas d'erreur, l'API répond a
 | POST | `/save` | | sauvegarde l'état dans `state.json` |
 | POST | `/load` | | recharge l'état depuis `state.json` |
 | GET | `/price` | | prix courant |
-| GET | `/scenarios` | | liste des scénarios disponibles |
-| POST | `/replay/{id}` | | lance le rejeu en arrière-plan |
+| GET | `/scenarios` | | liste des scénarios disponibles, avec leur vrai prix de départ |
+| POST | `/replay/{id}` | | lance le rejeu en arrière-plan (réponse 202) |
 | GET | `/liquidations` | | historique des liquidations |
 | GET | `/risk` | | mode courant du gardien et baisse observée |
 | POST | `/risk/toggle` | | active ou désactive le gardien |
 | POST | `/stress-test` | `{ "scenarios": 10000 }` | résultat du stress test |
-| GET | `/report` | | rapport du dernier rejeu |
+| GET | `/report` | | rapport du dernier rejeu (`null` si aucun n'est terminé) |
 
 ---
 
