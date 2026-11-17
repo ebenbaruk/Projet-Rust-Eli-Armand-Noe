@@ -147,11 +147,7 @@ pub fn simulate(portfolio: &Portfolio, prices: &[Price], guardian_enabled: bool)
         liquidate(&mut protocol);
     }
 
-    let mut bad_debt = 0u64;
-    for position in protocol.positions.values() {
-        bad_debt = bad_debt.saturating_add(position.bad_debt(protocol.price).0);
-    }
-    UsdcAmount(bad_debt)
+    protocol.total_bad_debt()
 }
 
 /// A dip buyer without debt borrows the most the protocol allows right now.
