@@ -135,7 +135,7 @@ curl localhost:3000/liquidations                                                
 curl localhost:3000/report                                                            # une fois terminé
 ```
 
-Le rapport donne les prix rejoués, la baisse maximale, le nombre de liquidations, la dette remboursée, la dette irrécouvrable finale et le détail par bot. Avec trois emprunteurs à 1 400, 1 200 et 1 000 USDC, on obtient par exemple 11 liquidations (8 pour `fast`, 3 pour `average`) et aucune dette irrécouvrable. La répartition entre les bots change d'un rejeu à l'autre, puisqu'ils sont en concurrence.
+Le rapport donne les prix rejoués, la baisse maximale, le nombre de liquidations, la dette remboursée, la dette irrécouvrable finale et le détail par bot. Avec trois emprunteurs à 1 400, 1 200 et 1 000 USDC, nos essais ont donné entre 8 et 11 liquidations. Leur nombre et leur répartition entre les bots changent d'un rejeu à l'autre, puisque les bots sont en concurrence. Seul le résultat est stable : aucune dette irrécouvrable.
 
 ### Règle de liquidation
 
@@ -146,7 +146,7 @@ Le rapport donne les prix rejoués, la baisse maximale, le nombre de liquidation
 - **Quand le collatéral ne suffit plus, on suit Aave V3** (`_calculateAvailableCollateralToLiquidate` dans `LiquidationLogic.sol`) : le liquidateur prend tout le collatéral restant mais ne rembourse que sa valeur, prime déduite. Le reste de la dette reste visible comme dette irrécouvrable. S'il remboursait quand même 50 % de la dette, il paierait pour du collatéral inexistant, et la dette irrécouvrable disparaîtrait artificiellement.
 - Une position sans collatéral n'est plus liquidable (`NothingToLiquidate`, l'équivalent de `CollateralCannotBeLiquidated` chez Aave), et sa dette ne produit plus d'intérêts.
 
-Ce que l'on ne reprend pas d'Aave : le *close factor* à 100 % sous un facteur de santé de 0,95, la règle anti-poussière et le compteur `deficit`. La dette irrécouvrable est calculée position par position (`Protocol::total_bad_debt`), ce qui donne le même chiffre.
+Ce que l'on ne reprend pas d'Aave : le *close factor* à 100 % sous un facteur de santé de 0,95, la règle anti-poussière et le compteur `deficit`. Les deux mesures de la perte ne sont pas les mêmes. Aave n'inscrit un `deficit` que lorsqu'une liquidation laisse une position sans collatéral. Notre dette irrécouvrable (`Protocol::total_bad_debt`, section 4.6) compte aussi les positions sous l'eau qui ont encore de l'ETH : c'est ce que perdrait le pool si toutes les positions étaient soldées au prix courant. Elle est donc au moins égale au `deficit` d'Aave, et peut être positive quand celui-ci est nul. C'est le cas d'un rejeu sans liquidateur : aucune liquidation n'a lieu, les emprunteurs gardent tout leur ETH, et pourtant leur dette dépasse la valeur de ce collatéral.
 
 ### Rejeu et bots
 
@@ -171,7 +171,7 @@ Chaque bot repère les positions liquidables, attend son temps de réaction, pui
 
 ### État partagé
 
-Le rejeu, les bots et les routes partagent le même `AppState`. Son nouvel état `replay` (rejeu en cours, historique, dernier rapport) a son propre `Mutex`. Les verrous sont toujours pris dans le même ordre : protocole, gardien, puis rejeu. Deux tâches ne peuvent donc jamais s'attendre l'une l'autre. `replay::start` tient le protocole et le rejeu en même temps : deux requêtes simultanées ne peuvent pas lancer deux rejeux.
+Le rejeu, les bots et les routes partagent le même `AppState`. Son état `replay` (rejeu en cours, historique, dernier rapport) a son propre `Mutex`. Les verrous sont toujours pris dans le même ordre : protocole, gardien, puis rejeu. Deux tâches ne peuvent donc jamais s'attendre l'une l'autre. `replay::start` tient le protocole et le rejeu en même temps : deux requêtes simultanées ne peuvent pas lancer deux rejeux.
 
 Aucun verrou n'est gardé pendant une attente. Le compilateur le garantit d'ailleurs : un `std::sync::MutexGuard` n'est pas `Send`, donc une tâche lancée avec `tokio::spawn` qui le garderait pendant un `.await` ne compilerait pas.
 
