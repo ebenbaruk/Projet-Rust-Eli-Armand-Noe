@@ -16,6 +16,7 @@ use crate::guardian::Guardian;
 use crate::protocol::Protocol;
 use crate::replay::ReplayState;
 
+pub mod crash;
 pub mod lending;
 pub mod risk;
 
@@ -81,6 +82,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(lending::routes())
         .merge(risk::routes())
+        .merge(crash::routes())
         .with_state(state)
 }
 

@@ -16,7 +16,7 @@ use crate::bots::{self, Bot, BotReport, DEFAULT_BOTS};
 use crate::error::LendingError;
 use crate::liquidation::Liquidation;
 use crate::report::ReplayReport;
-use crate::types::Price;
+use crate::types::{Price, to_u64};
 
 /// Real time between two simulated minutes. A day of 1 440 minutes takes
 /// about 15 seconds.
@@ -78,25 +78,54 @@ pub struct ReplayState {
 
 /// Starts the replay of `prices` in the background.
 ///
-/// Returns `ReplayAlreadyRunning` if another replay is in progress. Otherwise,
-/// returns the task, which ends with the report of the replay. The report is
-/// also kept in the shared state.
+/// The prices are first rescaled so that the replay starts at the current
+/// price (see `scale_prices`). Returns `ReplayAlreadyRunning` if another
+/// replay is in progress. Otherwise, returns the task, which ends with the
+/// report of the replay. The report is also kept in the shared state.
 pub fn start(
     state: &AppState,
     scenario: &str,
     prices: Vec<Price>,
     config: ReplayConfig,
 ) -> Result<JoinHandle<ReplayReport>, LendingError> {
-    {
+    let prices = {
+        // Both locks are held, in the usual order, so two requests cannot
+        // start a replay at the same time.
+        let protocol = state.lock();
         let mut replay = state.lock_replay();
         if replay.running {
             return Err(LendingError::ReplayAlreadyRunning);
         }
         replay.running = true;
         replay.liquidations.clear();
-    }
+        scale_prices(&prices, protocol.price)
+    };
     let task = tokio::spawn(run(state.clone(), scenario.to_string(), prices, config));
     Ok(task)
+}
+
+/// Rescales the prices so that the first one becomes `start`.
+///
+/// The positions are opened at the current price of the pool, while a
+/// scenario holds the real prices of its time (195 USDC per ETH for Black
+/// Thursday). Each price keeps its ratio to the first one, so the crash keeps
+/// its shape (-48 % for Black Thursday) whatever the starting price.
+pub fn scale_prices(prices: &[Price], start: Price) -> Vec<Price> {
+    let Some(&first) = prices.first() else {
+        return Vec::new();
+    };
+    // A zero price cannot be used as a base. The scenario files never contain
+    // one, so the prices are simply kept as they are.
+    if first.0 == 0 {
+        return prices.to_vec();
+    }
+    prices
+        .iter()
+        .map(|price| {
+            let scaled = price.0 as u128 * start.0 as u128 / first.0 as u128;
+            Price(to_u64(scaled))
+        })
+        .collect()
 }
 
 /// Replays the prices one by one while the bots liquidate, then builds the report.
@@ -221,9 +250,10 @@ mod tests {
                 reaction: Duration::from_millis(1),
             }],
         };
-        // The price stays at 1 800 USDC, where Bob can be liquidated, long
-        // enough for the bot to react.
-        let prices = vec![Price::from_usdc(1_800); 20];
+        // From 2 000 USDC, the price drops to 1 800 USDC, where Bob can be
+        // liquidated, and stays there long enough for the bot to react.
+        let mut prices = vec![Price::from_usdc(2_000)];
+        prices.extend(vec![Price::from_usdc(1_800); 20]);
 
         let report = start(&state, "test", prices, config)
             .unwrap()
@@ -268,5 +298,36 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn scenario_is_rescaled_to_the_current_price() {
+        let state = state_with_bob();
+        // The protocol is at 2 000 USDC, the scenario goes from 195.02 to 97.51
+        // USDC: the replay goes from 2 000 to 1 000 USDC.
+        let prices = vec![Price(19_502), Price(9_751)];
+
+        let report = start(&state, "test", prices, config_without_bots())
+            .unwrap()
+            .await
+            .unwrap();
+
+        assert_eq!(report.start_price, Price::from_usdc(2_000));
+        assert_eq!(report.end_price, Price::from_usdc(1_000));
+        assert_eq!(state.lock().price, Price::from_usdc(1_000));
+    }
+
+    #[test]
+    fn rescaling_keeps_the_shape_of_the_crash() {
+        // Lowest price of Black Thursday: 101.37 USDC, i.e. -48 % from 195.02.
+        let prices = [Price(19_502), Price(10_137)];
+        let scaled = scale_prices(&prices, Price::from_usdc(2_000));
+        // 2 000 × 101.37 / 195.02 = 1 039.58 USDC, rounded down to the cent.
+        assert_eq!(scaled, vec![Price(200_000), Price(103_958)]);
+    }
+
+    #[test]
+    fn rescaling_an_empty_scenario_gives_no_price() {
+        assert!(scale_prices(&[], Price::from_usdc(2_000)).is_empty());
     }
 }
