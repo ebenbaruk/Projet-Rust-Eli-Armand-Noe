@@ -87,23 +87,36 @@ async fn bots_follow_a_progressive_crash() {
 #[tokio::test]
 async fn a_crash_faster_than_the_bots_leaves_bad_debt() {
     let state = pool_with_three_borrowers();
-    // The only bot reacts in 1 second, but the crash lasts a few milliseconds.
+    // The bot reacts in 50 ms, but the crash is over after 4 steps of 1 ms.
     let config = ReplayConfig {
         step_delay: Duration::from_millis(1),
         bots: vec![Bot {
-            name: "too-slow",
-            reaction: Duration::from_secs(1),
+            name: "slow",
+            reaction: Duration::from_millis(50),
         }],
     };
-    // -60 % in 12 minutes.
-    let prices = crash(100, 800, 1);
+    // -60 % in 4 minutes, then 200 minutes at the bottom: the replay lasts
+    // long enough for the bot to wake up and try.
+    let prices = crash(300, 800, 200);
+    let bottom = prices.len() - 200;
 
     let report = replay::start(&state, "flash-crash", prices, config)
         .unwrap()
         .await
         .unwrap();
 
-    assert_eq!(report.liquidations, 0);
+    // The bot did try to liquidate...
+    let bot = &report.bots[0];
+    assert!(bot.liquidations + bot.missed > 0);
+    // ...but only once the price had already reached the bottom, where the
+    // collateral of every borrower is worth less than their debt.
+    let replay = state.lock_replay();
+    assert!(
+        replay
+            .liquidations
+            .iter()
+            .all(|record| record.minute >= bottom)
+    );
     assert!(report.bad_debt > UsdcAmount(0));
 }
 
