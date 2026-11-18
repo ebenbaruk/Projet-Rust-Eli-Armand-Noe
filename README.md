@@ -35,6 +35,62 @@ curl localhost:3000/positions                                                   
 
 Amounts are integers: USDC in cents, ETH in gwei, and the price in USDC cents per ETH.
 
+## Demo
+
+`scripts/demo.sh` tells the whole story of the project in the terminal, in about a minute. It opens a few loans, replays Black Thursday with the liquidation bots, runs the stress test and saves the state. Like any other client, it only goes through the HTTP API.
+
+```bash
+./scripts/demo.sh          # waits for Enter between the steps, to comment on each one
+./scripts/demo.sh --auto   # runs every step in a row
+```
+
+Requirements: `cargo`, `curl` and `jq` (`jq` ships with macOS 15 and later, otherwise `brew install jq` or `apt install jq`). Port 3000 must be free. The script builds the project in release mode, starts its own server and stops it at the end. In release mode, the stress test takes about 3 s instead of about a minute in debug mode.
+
+### Steps
+
+| Step | What the terminal shows | Code involved |
+|---|---|---|
+| 1. Start the server | release build, then the server listening on port 3000 | `main.rs`: tokio runtime and `axum::serve` |
+| 2. Open three loans | Alice supplies 100,000 USDC. Bob, Carol and Dave each deposit 1 ETH and borrow 1,400, 1,200 and 1,000 USDC. Then the pool and each position with its health factor | `protocol.rs`, `api/lending.rs`, JSON in and out through serde |
+| 3. Refused operations | five invalid requests, with their HTTP status and error message | `error.rs`, `IntoResponse` in `api/mod.rs`. The text amount is refused by serde before our code runs |
+| 4. Replay Black Thursday | a live line with the ETH price, the drop and the guardian mode, each liquidation as it happens, then the report and the work of each bot | `replay.rs` and `bots.rs` (tokio tasks and a `watch` channel), `liquidation.rs`, `guardian.rs`, `report.rs` |
+| 5. Stress test | 10,000 random crashes: survival rate and average bad debt, with and without the guardian | `stress_test.rs` (`std::thread::scope` inside `spawn_blocking`), `report.rs` |
+| 6. Save and load | the positions written to `state.json`, then read back | `persistence.rs` with serde_json |
+
+### What to look at
+
+- **The replay runs in the background.** `POST /replay/black-thursday` answers 202 at once, and a second request gets 409 because only one replay runs at a time. The live line keeps moving while the script keeps calling the API: the HTTP handlers and the replay are separate tokio tasks.
+- **The guardian follows the speed of the crash, not its depth.** The live line shows the drop since the start of the replay, while the guardian only looks at the last 60 minutes. Its mode goes from `Normal` to `Alert`, then to `Emergency`, when the price falls by more than 5%, then 15%, within an hour. It goes back to `Normal` when the fall slows down, even though ETH is still about 30% below its starting price.
+- **The bots compete.** Most liquidations go to the `fast` bot. The others arrive too late and count them as `missed`. The number of liquidations changes from one run to the next (8 to 11 in our runs), but the outcome does not: no bad debt.
+- **The stress test is reproducible.** It always uses the seed 42, so the same request gives the same numbers on every machine, whatever the number of threads.
+- **Integers end to end.** The API sends cents, gwei and basis points. The script converts them for display with integer arithmetic only, like the protocol.
+
+End of a run, steps 4 and 5:
+
+```text
+  Report
+  start price      2,000.00 USDC
+  lowest price     1,039.58 USDC
+  maximum drop     -48.02%
+  liquidations     9
+  debt repaid      3,112.58 USDC
+  bad debt         0.00 USDC, the pool survived
+
+  bot        liquidations   missed   repaid
+  fast       9              4        3,112.58 USDC
+  average    0              2        0.00 USDC
+  slow       0              4        0.00 USDC
+
+== 5. Stress test
+                       without guardian     with guardian
+  survival rate        91.19%               92.34%
+  average bad debt     1,536.59 USDC        939.41 USDC
+
+  10 threads, 3.0 s
+```
+
+Without a terminal (for example `./scripts/demo.sh --auto > demo.log`), the script skips the colors and the live lines and prints only the results. The save step overwrites any previous `state.json`.
+
 ## Code layout
 
 | Module | Role |
