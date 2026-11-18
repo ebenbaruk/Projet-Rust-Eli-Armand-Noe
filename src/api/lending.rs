@@ -227,19 +227,25 @@ pub async fn save(State(state): State<AppState>) -> Result<Json<PoolView>, Lendi
     Ok(Json(pool_view(&snapshot)))
 }
 
-/// POST /load: replaces the state of the protocol with the state file.
+/// POST /load: replaces the state of the protocol with the state file, then
+/// shows the loaded price to the guardian, as `POST /price` does.
 /// Returns the state of the pool, or `Storage` if the file cannot be read.
 pub async fn load(State(state): State<AppState>) -> Result<Json<PoolView>, LendingError> {
     // Read the file first: the lock is only taken to swap the state.
     let loaded = persistence::load(&state.state_file)?;
     let mut protocol = state.lock();
     *protocol = loaded;
+    // The file brings back the price and the borrowing restrictions of the
+    // moment it was saved. The guardian sees that price like any new one, so
+    // the restrictions match its own mode again.
+    state.lock_guardian().observe(&mut protocol);
     Ok(Json(pool_view(&protocol)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::risk::toggle_risk;
     use crate::types::Params;
 
     fn test_state() -> AppState {
@@ -391,5 +397,50 @@ mod tests {
         let Json(pool) = load(State(state.clone())).await.unwrap();
         std::fs::remove_file(&state.state_file).unwrap();
         assert_eq!(pool.cash, UsdcAmount::from_usdc(10_000));
+    }
+
+    /// Moves the price through the route, as `POST /price` does.
+    async fn move_price(state: &AppState, usdc: u64) {
+        let request = Json(PriceRequest {
+            price: Price::from_usdc(usdc),
+        });
+        let Json(view) = set_price(State(state.clone()), request).await.unwrap();
+        assert_eq!(view.price, Price::from_usdc(usdc));
+    }
+
+    #[tokio::test]
+    async fn load_does_not_bring_back_the_pause_of_a_disabled_guardian() {
+        let mut state = funded_state();
+        state.state_file = std::env::temp_dir().join("crashlend-load-disabled-guardian.json");
+        // -20 %: the guardian pauses new borrows, and the file keeps the
+        // pause with the rest of the protocol.
+        move_price(&state, 2_000).await;
+        move_price(&state, 1_600).await;
+        let _ = save(State(state.clone())).await.unwrap();
+        let Json(risk) = toggle_risk(State(state.clone())).await;
+        assert!(!risk.enabled);
+
+        let _ = load(State(state.clone())).await.unwrap();
+        std::fs::remove_file(&state.state_file).unwrap();
+
+        // The guardian is off: the saved pause must not come back.
+        assert!(borrow(State(state), usdc("bob", 100)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn load_counts_as_a_new_price_for_the_guardian() {
+        let mut state = funded_state();
+        state.state_file = std::env::temp_dir().join("crashlend-load-new-price.json");
+        move_price(&state, 2_000).await;
+        let _ = save(State(state.clone())).await.unwrap();
+        move_price(&state, 2_400).await;
+
+        // The file brings the price back to 2 000, 16.7 % below the high of
+        // the last hour: the guardian must pause new borrows.
+        let _ = load(State(state.clone())).await.unwrap();
+        std::fs::remove_file(&state.state_file).unwrap();
+
+        let result = borrow(State(state), usdc("bob", 100)).await;
+        assert!(matches!(result, Err(LendingError::BorrowingPaused)));
     }
 }
