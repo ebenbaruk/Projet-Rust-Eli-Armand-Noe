@@ -2,14 +2,13 @@
 //! liquidation bots, and the real Black Thursday rescaled to the pool.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::time::Duration;
 
 use crashlend::api::AppState;
 use crashlend::bots::Bot;
 use crashlend::protocol::Protocol;
 use crashlend::replay::{self, ReplayConfig};
-use crashlend::scenario::{self, DATA_DIR};
+use crashlend::scenario;
 use crashlend::types::{Bps, EthAmount, Params, Price, UsdcAmount, UserId};
 
 /// A pool at 2 000 USDC per ETH. Bob, Carol and Dave each deposit 1 ETH and
@@ -123,8 +122,7 @@ async fn a_crash_faster_than_the_bots_leaves_bad_debt() {
 #[tokio::test]
 async fn black_thursday_is_rescaled_to_the_pool() {
     let state = pool_with_three_borrowers();
-    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join(DATA_DIR);
-    let scenario = scenario::load(&data, "black-thursday").unwrap();
+    let scenario = scenario::load(&scenario::data_dir(), "black-thursday").unwrap();
     let config = ReplayConfig {
         step_delay: Duration::ZERO,
         bots: Vec::new(),
