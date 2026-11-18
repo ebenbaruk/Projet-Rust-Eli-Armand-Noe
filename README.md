@@ -71,6 +71,8 @@ Les montants sont des entiers : les USDC sont en centimes, l'ETH en gwei et le p
 
 En cas d'erreur, la réponse a un code HTTP adapté (400, 404, 422, 500) et le corps `{ "error": "<message>" }`.
 
+`state.json` est écrit à la racine du projet, connue à la compilation (`env!("CARGO_MANIFEST_DIR")` dans `api::default_state_file`), et non dans le dossier où le serveur est lancé. Une sauvegarde est donc retrouvée au redémarrage, quel que soit ce dossier. Le fichier est ignoré par Git.
+
 ### Choix de conception
 
 - **Des newtypes pour chaque unité.** `EthAmount`, `UsdcAmount`, `Price` et `Bps` enveloppent un `u64`. Le compilateur refuse donc d'additionner des ETH et des USDC, ou de passer un prix à la place d'un montant. Grâce à serde, ces types restent de simples nombres dans le JSON.

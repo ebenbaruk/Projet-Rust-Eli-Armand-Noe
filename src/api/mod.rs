@@ -2,7 +2,7 @@
 //!
 //! Each part of the project adds its own routes in a submodule.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::Json;
@@ -38,17 +38,27 @@ pub struct AppState {
     pub state_file: PathBuf,
 }
 
-/// Default file used to save the state.
+/// Name of the file used to save the state, at the root of the project.
 pub const STATE_FILE: &str = "state.json";
 
+/// Returns the default file used by `/save` and `/load`.
+///
+/// The path starts from the root of the project, known when the code is
+/// compiled, and not from the folder the server is launched from. A state
+/// saved by one server is therefore found by the next one, wherever it starts.
+pub fn default_state_file() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(STATE_FILE)
+}
+
 impl AppState {
-    /// Wraps a protocol so it can be shared between tasks. The guardian starts enabled.
+    /// Wraps a protocol so it can be shared between tasks. The guardian starts
+    /// enabled, and the state is saved to `default_state_file()`.
     pub fn new(protocol: Protocol) -> AppState {
         AppState {
             protocol: Arc::new(Mutex::new(protocol)),
             guardian: Arc::new(Mutex::new(Guardian::new(true))),
             replay: Arc::new(Mutex::new(ReplayState::default())),
-            state_file: PathBuf::from(STATE_FILE),
+            state_file: default_state_file(),
         }
     }
 
@@ -123,7 +133,18 @@ impl IntoResponse for LendingError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::UserId;
+    use crate::types::{Params, Price, UserId};
+
+    #[test]
+    fn state_file_does_not_depend_on_the_launch_folder() {
+        let state = AppState::new(Protocol::new(Params::default(), Price::from_usdc(2_000)));
+        // An absolute path points to the same file wherever the server starts.
+        assert!(state.state_file.is_absolute());
+        assert_eq!(
+            state.state_file,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("state.json")
+        );
+    }
 
     #[test]
     fn errors_have_a_matching_status() {
