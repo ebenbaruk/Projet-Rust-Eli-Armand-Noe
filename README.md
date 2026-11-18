@@ -1,273 +1,273 @@
 # CrashLend
 
-Projet réalisé dans le cadre du cours de Rust à l'ESILV (A4 - S7).
+Project built for the Rust course at ESILV (A4 - S7).
 
-CrashLend est une version simplifiée d'un protocole de prêt DeFi comme Aave, écrite en Rust et exécutée en simulation. Des prêteurs déposent des USDC, des emprunteurs empruntent ces USDC en déposant de l'ETH en garantie, et les positions trop risquées peuvent être liquidées. Le projet rejoue ensuite de vrais krachs de l'ETH pour mesurer si le protocole y aurait survécu.
+CrashLend is a simplified DeFi lending protocol in the style of Aave, written in Rust and run as a simulation. Lenders supply USDC, borrowers borrow that USDC by depositing ETH as collateral, and positions that become too risky can be liquidated. The project then replays real ETH crashes to measure whether the protocol would have survived them.
 
-La spécification complète est dans [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md).
+The full specification (in French) is in [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md).
 
-## Membres
+## Team
 
-- Eli Benbaruk : protocole de prêt
-- Armand : krachs et liquidations
-- Noé : gardien du risque et stress test
+- Eli Benbaruk: lending protocol
+- Armand: crashes and liquidations
+- Noé: risk guardian and stress test
 
-## Lancer le projet
+## Running the project
 
-Prérequis : Rust stable (édition 2024).
+Requirement: stable Rust (edition 2024).
 
 ```bash
-cargo run          # démarre le serveur sur http://127.0.0.1:3000
-cargo test         # tests unitaires et d'intégration
-cargo bench        # benchmarks criterion
+cargo run          # starts the server on http://127.0.0.1:3000
+cargo test         # unit and integration tests
+cargo bench        # criterion benchmarks
 ```
 
-Exemple de session avec `curl` :
+Example session with `curl`:
 
 ```bash
 H='Content-Type: application/json'
-curl -X POST localhost:3000/supply  -H "$H" -d '{"user":"alice","amount":1000000}'    # 10 000 USDC
+curl -X POST localhost:3000/supply  -H "$H" -d '{"user":"alice","amount":1000000}'    # 10,000 USDC
 curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"bob","amount":1000000000}'    # 1 ETH
-curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"bob","amount":150000}'        # 1 500 USDC
-curl -X POST localhost:3000/price   -H "$H" -d '{"price":150000}'                      # ETH à 1 500 USDC
-curl localhost:3000/positions                                                          # bob est liquidable
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"bob","amount":150000}'        # 1,500 USDC
+curl -X POST localhost:3000/price   -H "$H" -d '{"price":150000}'                      # ETH at 1,500 USDC
+curl localhost:3000/positions                                                          # bob can be liquidated
 ```
 
-Les montants sont des entiers : les USDC sont en centimes, l'ETH en gwei et le prix en centimes d'USDC pour 1 ETH.
+Amounts are integers: USDC in cents, ETH in gwei, and the price in USDC cents per ETH.
 
-## Organisation du code
+## Code layout
 
-| Module | Rôle |
+| Module | Role |
 |---|---|
-| `types.rs` | types du domaine : montants, prix, pourcentages, position, paramètres |
-| `error.rs` | `LendingError`, l'erreur unique de la bibliothèque |
-| `protocol.rs` | état du pool et opérations de prêt |
-| `interest.rs` | modèle de taux et intérêts |
-| `persistence.rs` | sauvegarde et chargement de l'état en JSON |
-| `guardian.rs` | gardien du risque : baisse sur 60 minutes et restrictions d'emprunt |
-| `liquidation.rs` | règle de liquidation d'une position |
-| `scenario.rs` | chargement des krachs historiques de `data/` |
-| `replay.rs` | rejeu d'un krach, minute par minute |
-| `bots.rs` | bots liquidateurs concurrents |
-| `stress_test.rs` | krachs aléatoires rejoués sur plusieurs threads |
-| `report.rs` | rapports du stress test et du rejeu |
-| `api/` | routeur axum, état partagé et routes |
+| `types.rs` | domain types: amounts, prices, percentages, position, parameters |
+| `error.rs` | `LendingError`, the single error type of the library |
+| `protocol.rs` | state of the pool and lending operations |
+| `interest.rs` | interest rate model and interest accrual |
+| `persistence.rs` | saving and loading the state as JSON |
+| `guardian.rs` | risk guardian: 60-minute drop and borrowing restrictions |
+| `liquidation.rs` | liquidation rule for one position |
+| `scenario.rs` | loading the historical crashes from `data/` |
+| `replay.rs` | replay of a crash, minute by minute |
+| `bots.rs` | competing liquidation bots |
+| `stress_test.rs` | random crashes replayed on several threads |
+| `report.rs` | reports of the stress test and of the replay |
+| `api/` | axum router, shared state and routes |
 
-## Protocole de prêt
+## Lending protocol
 
 ### Routes
 
-| Méthode | Route | Effet |
+| Method | Route | Effect |
 |---|---|---|
-| POST | `/supply` | ajoute des USDC au pool |
-| POST | `/deposit` | ajoute de l'ETH en garantie |
-| POST | `/borrow` | emprunte des USDC |
-| POST | `/repay` | rembourse la dette (un montant trop grand est ramené à la dette) |
-| POST | `/withdraw` | retire de l'ETH |
-| GET | `/pool` | liquidité, dette totale, utilisation, taux |
-| GET | `/positions` | positions avec facteur de santé |
-| GET / POST | `/price` | lit ou modifie le prix de l'ETH |
-| POST | `/save`, `/load` | sauvegarde ou recharge l'état dans `state.json` |
+| POST | `/supply` | adds USDC to the pool |
+| POST | `/deposit` | adds ETH as collateral |
+| POST | `/borrow` | borrows USDC |
+| POST | `/repay` | repays debt (an amount larger than the debt is capped at the debt) |
+| POST | `/withdraw` | withdraws ETH |
+| GET | `/pool` | liquidity, total debt, utilization, rate |
+| GET | `/positions` | positions with their health factor |
+| GET / POST | `/price` | reads or sets the ETH price |
+| POST | `/save`, `/load` | saves or reloads the state in `state.json` |
 
-En cas d'erreur, la réponse a un code HTTP adapté (400, 404, 422, 500) et le corps `{ "error": "<message>" }`.
+On error, the response has a suitable HTTP status (400, 404, 422, 500) and the body `{ "error": "<message>" }`.
 
-`state.json` est écrit à la racine du projet, connue à la compilation (`env!("CARGO_MANIFEST_DIR")` dans `api::default_state_file`), et non dans le dossier où le serveur est lancé. Une sauvegarde est donc retrouvée au redémarrage, quel que soit ce dossier. Le fichier est ignoré par Git.
+`state.json` is written at the root of the project, known at compile time (`env!("CARGO_MANIFEST_DIR")` in `api::default_state_file`), not in the folder the server is started from. A save is therefore found again after a restart, whatever that folder. The file is ignored by Git.
 
-### Choix de conception
+### Design choices
 
-- **Des newtypes pour chaque unité.** `EthAmount`, `UsdcAmount`, `Price` et `Bps` enveloppent un `u64`. Le compilateur refuse donc d'additionner des ETH et des USDC, ou de passer un prix à la place d'un montant. Grâce à serde, ces types restent de simples nombres dans le JSON.
-- **Pas de nombres flottants.** Tous les calculs sont faits sur des entiers. Les produits intermédiaires passent par un `u128` pour éviter les dépassements de capacité.
-- **Une seule erreur.** Toutes les fonctions qui peuvent échouer renvoient `Result<_, LendingError>`. L'API convertit chaque variante en code HTTP grâce à `IntoResponse`.
-- **Une opération refusée ne modifie rien.** Chaque opération travaille sur une copie de la position et ne la réécrit qu'une fois tous les contrôles passés.
-- **Les intérêts sans perte d'arrondi.** Une minute d'intérêt sur une petite dette vaut moins d'un centime. Ce reste est conservé dans la position et reporté à la minute suivante. Sur un an, on retrouve exactement le taux annuel.
+- **A newtype for each unit.** `EthAmount`, `UsdcAmount`, `Price` and `Bps` wrap a `u64`. The compiler therefore refuses to add ETH to USDC, or to pass a price where an amount is expected. Thanks to serde, these types stay plain numbers in JSON.
+- **No floating-point numbers.** Every computation uses integers. Intermediate products go through a `u128` to avoid overflows.
+- **A single error type.** Every function that can fail returns `Result<_, LendingError>`. The API turns each variant into an HTTP status through `IntoResponse`.
+- **A refused operation changes nothing.** Each operation works on a copy of the position and only writes it back once every check has passed.
+- **Interest without rounding loss.** One minute of interest on a small debt is worth less than a cent. That remainder is kept in the position and carried over to the next minute. Over a year, the exact annual rate is recovered.
 
-### État partagé
+### Shared state
 
-Le `Protocol` est détenu par un `Arc<Mutex<Protocol>>` placé dans `AppState`. axum le transmet à chaque route via `State`, et le rejeu et les bots en reçoivent une copie du pointeur. Chaque accès prend le verrou pour une opération courte et le relâche aussitôt. `/save` copie l'état et relâche le verrou avant d'écrire sur le disque. `/load` lit le fichier avant de prendre le verrou.
+The `Protocol` is held by an `Arc<Mutex<Protocol>>` in `AppState`. axum passes it to every route through `State`, and the replay and the bots receive a copy of the pointer. Each access takes the lock for a short operation and releases it right away. `/save` copies the state and releases the lock before writing to disk. `/load` reads the file before taking the lock.
 
-Un `std::sync::Mutex` suffit : le verrou n'est jamais conservé pendant un `.await`, donc il ne bloque pas le runtime tokio.
+A `std::sync::Mutex` is enough: the lock is never held across an `.await`, so it does not block the tokio runtime.
 
 ### Benchmark
 
-`cargo bench` mesure deux boucles sur un pool de 10 000 positions :
+`cargo bench` measures two loops on a pool of 10,000 positions:
 
-| Benchmark | Mesure | Résultat indicatif |
+| Benchmark | Measures | Typical result |
 |---|---|---|
-| `health_factor_10000_positions` | vérifier quelles positions sont liquidables, comme un bot à chaque pas | environ 80 µs |
-| `accrue_interest_10000_positions` | ajouter une minute d'intérêt à chaque position | environ 85 µs |
+| `health_factor_10000_positions` | finding which positions can be liquidated, as a bot does at each step | about 80 µs |
+| `accrue_interest_10000_positions` | adding one minute of interest to every position | about 85 µs |
 
-Ces deux boucles tournent à chaque minute simulée : elles déterminent la vitesse d'un rejeu. Pour l'améliorer, on pourrait stocker les positions dans un `Vec` plutôt qu'une `BTreeMap`, ce qui rend le parcours plus favorable au cache.
+Both loops run at every simulated minute: they set the speed of a replay. To make them faster, the positions could be stored in a `Vec` rather than a `BTreeMap`, which makes the traversal more cache-friendly.
 
-## Krachs et liquidations
+## Crashes and liquidations
 
-### Données
+### Data
 
-`data/` contient le prix de l'ETH minute par minute pendant trois krachs, au format de la section 5.2 de la spécification :
+`data/` holds the ETH price minute by minute during three crashes, in the format of section 5.2 of the specification:
 
-| Scénario | Période | Minutes | Vrai prix (départ → plus bas) | Baisse max |
+| Scenario | Period | Minutes | Real price (start → lowest) | Max drop |
 |---|---|---|---|---|
-| `black-thursday` | 12 mars 2020 | 1 440 | 195,02 → 101,37 USDC | −48 % |
-| `luna` | 9 au 12 mai 2022 | 5 760 | 2 524,06 → 1 800,01 USDC | −29 % |
-| `ftx` | 7 au 10 novembre 2022 | 5 760 | 1 569,26 → 1 076,24 USDC | −31 % |
+| `black-thursday` | March 12, 2020 | 1,440 | 195.02 → 101.37 USDC | −48% |
+| `luna` | May 9 to 12, 2022 | 5,760 | 2,524.06 → 1,800.01 USDC | −29% |
+| `ftx` | November 7 to 10, 2022 | 5,760 | 1,569.26 → 1,076.24 USDC | −31% |
 
-Ces prix sont les cours de clôture des bougies d'une minute ETH/USDT de l'API publique de Binance. `scripts/fetch_scenarios.sh` les télécharge une seule fois avec `curl` et `jq`, et s'arrête si une minute manque. Le serveur ne dépend donc d'aucun service extérieur. `scenario.rs` n'accepte que les identifiants connus : un identifiant reçu par l'API ne peut pas viser un autre fichier du disque.
+These prices are the close prices of the one-minute ETH/USDT candles from the public Binance API. `scripts/fetch_scenarios.sh` downloads them once with `curl` and `jq`, and stops if a minute is missing. The server therefore depends on no external service. `scenario.rs` only accepts known ids: an id received by the API cannot point to another file on disk.
 
-Le serveur trouve `data/` à partir de la racine du projet, connue à la compilation (`env!("CARGO_MANIFEST_DIR")` dans `scenario::data_dir`), et non à partir du dossier où il est lancé. `cargo run` ou `target/release/crashlend` fonctionnent donc depuis n'importe quel dossier. La seule condition est que le dossier du projet existe toujours : un binaire copié sur une autre machine ne trouverait pas les scénarios.
+The server finds `data/` from the root of the project, known at compile time (`env!("CARGO_MANIFEST_DIR")` in `scenario::data_dir`), not from the folder it is started from. `cargo run` and `target/release/crashlend` therefore work from any folder. The only condition is that the project folder still exists: a binary copied to another machine would not find the scenarios.
 
 ### Routes
 
-| Méthode | Route | Effet |
+| Method | Route | Effect |
 |---|---|---|
-| GET | `/scenarios` | scénarios disponibles, avec leur durée et leur vrai prix de départ |
-| POST | `/replay/{id}` | lance le rejeu en arrière-plan et répond 202 tout de suite (409 si un rejeu est déjà en cours) |
-| GET | `/liquidations` | liquidations du rejeu en cours ou du dernier : minute, bot, utilisateur, dette remboursée, collatéral saisi |
-| GET | `/report` | rapport du dernier rejeu terminé, ou `null` |
+| GET | `/scenarios` | available scenarios, with their length and real starting price |
+| POST | `/replay/{id}` | starts the replay in the background and answers 202 right away (409 if a replay is already running) |
+| GET | `/liquidations` | liquidations of the current or last replay: minute, bot, user, repaid debt, seized collateral |
+| GET | `/report` | report of the last finished replay, or `null` |
 
-### Démonstration
+### Demo
 
 ```bash
 H='Content-Type: application/json'
-curl -X POST localhost:3000/supply  -H "$H" -d '{"user":"alice","amount":10000000}'   # 100 000 USDC
+curl -X POST localhost:3000/supply  -H "$H" -d '{"user":"alice","amount":10000000}'   # 100,000 USDC
 curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"bob","amount":1000000000}'   # 1 ETH
 curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"carol","amount":1000000000}'
 curl -X POST localhost:3000/deposit -H "$H" -d '{"user":"dave","amount":1000000000}'
-curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"bob","amount":140000}'       # 1 400 USDC
-curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"carol","amount":120000}'     # 1 200 USDC
-curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"dave","amount":100000}'      # 1 000 USDC
-curl -X POST localhost:3000/replay/black-thursday                                     # environ 15 s
-curl localhost:3000/liquidations                                                      # pendant ou après
-curl localhost:3000/report                                                            # une fois terminé
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"bob","amount":140000}'       # 1,400 USDC
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"carol","amount":120000}'     # 1,200 USDC
+curl -X POST localhost:3000/borrow  -H "$H" -d '{"user":"dave","amount":100000}'      # 1,000 USDC
+curl -X POST localhost:3000/replay/black-thursday                                     # about 15 s
+curl localhost:3000/liquidations                                                      # during or after
+curl localhost:3000/report                                                            # once finished
 ```
 
-Le rapport donne les prix rejoués, la baisse maximale, le nombre de liquidations, la dette remboursée, la dette irrécouvrable finale et le détail par bot. Avec trois emprunteurs à 1 400, 1 200 et 1 000 USDC, nos essais ont donné entre 8 et 11 liquidations. Leur nombre et leur répartition entre les bots changent d'un rejeu à l'autre, puisque les bots sont en concurrence. Seul le résultat est stable : aucune dette irrécouvrable.
+The report gives the replayed prices, the maximum drop, the number of liquidations, the repaid debt, the final bad debt and the details per bot. With three borrowers at 1,400, 1,200 and 1,000 USDC, our runs gave between 8 and 11 liquidations. Their number and how they are split between the bots change from one replay to the next, since the bots compete. Only the outcome is stable: no bad debt.
 
-### Règle de liquidation
+### Liquidation rule
 
-`liquidation::liquidate` applique la section 4.5 à une position. C'est une fonction synchrone, utilisée à la fois par les bots et par le stress test.
+`liquidation::liquidate` applies section 4.5 to one position. It is a synchronous function, used both by the bots and by the stress test.
 
-- Elle refuse une position saine (`PositionHealthy`), un montant nul et un utilisateur inconnu.
-- Elle rembourse au plus 50 % de la dette et donne au liquidateur `remboursé × 1,05 / prix` en ETH.
-- **Quand le collatéral ne suffit plus, on suit Aave V3** (`_calculateAvailableCollateralToLiquidate` dans `LiquidationLogic.sol`) : le liquidateur prend tout le collatéral restant mais ne rembourse que sa valeur, prime déduite. Le reste de la dette reste visible comme dette irrécouvrable. S'il remboursait quand même 50 % de la dette, il paierait pour du collatéral inexistant, et la dette irrécouvrable disparaîtrait artificiellement.
-- Une position sans collatéral n'est plus liquidable (`NothingToLiquidate`, l'équivalent de `CollateralCannotBeLiquidated` chez Aave), et sa dette ne produit plus d'intérêts.
+- It refuses a healthy position (`PositionHealthy`), a zero amount and an unknown user.
+- It repays at most 50% of the debt and gives the liquidator `repaid × 1.05 / price` in ETH.
+- **When the collateral is no longer enough, we follow Aave V3** (`_calculateAvailableCollateralToLiquidate` in `LiquidationLogic.sol`): the liquidator takes all the remaining collateral but only repays its value, bonus deducted. The rest of the debt stays visible as bad debt. If the liquidator still repaid 50% of the debt, it would pay for collateral that does not exist, and the bad debt would disappear artificially.
+- A position without collateral can no longer be liquidated (`NothingToLiquidate`, the equivalent of `CollateralCannotBeLiquidated` in Aave), and its debt no longer earns interest.
 
-Ce que l'on ne reprend pas d'Aave : le *close factor* à 100 % sous un facteur de santé de 0,95, la règle anti-poussière et le compteur `deficit`. Les deux mesures de la perte ne sont pas les mêmes. Aave n'inscrit un `deficit` que lorsqu'une liquidation laisse une position sans collatéral. Notre dette irrécouvrable (`Protocol::total_bad_debt`, section 4.6) compte aussi les positions sous l'eau qui ont encore de l'ETH : c'est ce que perdrait le pool si toutes les positions étaient soldées au prix courant. Elle est donc au moins égale au `deficit` d'Aave, et peut être positive quand celui-ci est nul. C'est le cas d'un rejeu sans liquidateur : aucune liquidation n'a lieu, les emprunteurs gardent tout leur ETH, et pourtant leur dette dépasse la valeur de ce collatéral.
+What we do not take from Aave: the 100% close factor below a health factor of 0.95, the dust rule and the `deficit` counter. The two measures of the loss are not the same. Aave only records a `deficit` when a liquidation leaves a position without collateral. Our bad debt (`Protocol::total_bad_debt`, section 4.6) also counts underwater positions that still hold ETH: it is what the pool would lose if every position were closed at the current price. It is therefore at least equal to Aave's `deficit`, and can be positive when the latter is zero. That is the case of a replay without liquidators: no liquidation happens, the borrowers keep all their ETH, and yet their debt is larger than the value of that collateral.
 
-### Rejeu et bots
+### Replay and bots
 
-À chaque minute, le rejeu met le prix à jour, ajoute une minute d'intérêts et informe le gardien, puis attend 10 ms. Il envoie la minute courante aux bots par un canal `tokio::sync::watch`. À la fin, il leur envoie `Finished`, attend leur arrêt et enregistre le rapport.
+At each minute, the replay updates the price, adds one minute of interest and informs the guardian, then waits 10 ms. It sends the current minute to the bots through a `tokio::sync::watch` channel. At the end, it sends them `Finished`, waits for them to stop and stores the report.
 
-Trois bots tournent en parallèle du rejeu :
+Three bots run alongside the replay:
 
-| Bot | Temps de réaction | Soit |
+| Bot | Reaction time | That is |
 |---|---|---|
-| `fast` | 20 ms | 2 minutes simulées |
-| `average` | 50 ms | 5 minutes simulées |
-| `slow` | 150 ms | 15 minutes simulées |
+| `fast` | 20 ms | 2 simulated minutes |
+| `average` | 50 ms | 5 simulated minutes |
+| `slow` | 150 ms | 15 simulated minutes |
 
-Chaque bot repère les positions liquidables, attend son temps de réaction, puis tente de les liquider en demandant toute la dette (la règle la ramène à 50 %). Pendant son attente, un bot plus rapide peut avoir pris la même position, ou le prix peut être remonté : la tentative est alors comptée comme ratée (`missed`). C'est le fonctionnement d'une vraie blockchain, où la transaction la plus rapide l'emporte.
+Each bot spots the positions that can be liquidated, waits for its reaction time, then tries to liquidate them by asking for the whole debt (the rule caps it at 50%). While it waits, a faster bot may have taken the same position, or the price may have moved back up: the attempt is then counted as missed (`missed`). This is how a real blockchain works, where the fastest transaction wins.
 
-**Mise à l'échelle des prix.** Les scénarios contiennent les vrais prix (195 USDC au départ du Black Thursday), alors que le pool démarre à 2 000 USDC. Rejouer ces prix tels quels ferait chuter l'ETH de 90 % dès la première minute. Le rejeu multiplie donc chaque prix par `prix courant / premier prix du scénario` : le krach garde exactement sa forme (−48 % au plus bas pour le Black Thursday), quel que soit le prix de départ. Les liquidations et le gardien ne dépendent que de ces variations, pas du niveau du prix.
+**Price rescaling.** The scenarios hold the real prices (195 USDC at the start of Black Thursday), while the pool starts at 2,000 USDC. Replaying those prices as they are would make ETH drop by 90% at the first minute. The replay therefore multiplies each price by `current price / first price of the scenario`: the crash keeps exactly its shape (−48% at the lowest for Black Thursday), whatever the starting price. Liquidations and the guardian only depend on these moves, not on the price level.
 
-### Async ou threads
+### Async or threads
 
-- **Le rejeu et les bots sont des tâches tokio.** Ils passent presque tout leur temps à attendre (`tokio::time::sleep`). Une tâche en attente ne coûte presque rien, alors qu'un thread système garderait sa pile et sa place dans l'ordonnanceur pour ne rien faire, soit 4 threads bloqués par rejeu.
-- **La route `/replay` répond tout de suite.** Elle lance le rejeu avec `tokio::spawn` et ne l'attend pas : le rapport est rangé dans l'état partagé à la fin.
+- **The replay and the bots are tokio tasks.** They spend almost all their time waiting (`tokio::time::sleep`). A waiting task costs almost nothing, whereas a system thread would keep its stack and its place in the scheduler to do nothing, which means 4 blocked threads per replay.
+- **The `/replay` route answers right away.** It starts the replay with `tokio::spawn` and does not wait for it: the report is stored in the shared state at the end.
 
-### État partagé
+### Shared state
 
-Le rejeu, les bots et les routes partagent le même `AppState`. Son état `replay` (rejeu en cours, historique, dernier rapport) a son propre `Mutex`. Les verrous sont toujours pris dans le même ordre : protocole, gardien, puis rejeu. Deux tâches ne peuvent donc jamais s'attendre l'une l'autre. `replay::start` tient le protocole et le rejeu en même temps : deux requêtes simultanées ne peuvent pas lancer deux rejeux.
+The replay, the bots and the routes share the same `AppState`. Its `replay` state (replay in progress, history, last report) has its own `Mutex`. The locks are always taken in the same order: protocol, then guardian, then replay. Two tasks can therefore never wait on each other. `replay::start` holds the protocol and the replay at the same time: two simultaneous requests cannot start two replays.
 
-Aucun verrou n'est gardé pendant une attente. Le compilateur le garantit d'ailleurs : un `std::sync::MutexGuard` n'est pas `Send`, donc une tâche lancée avec `tokio::spawn` qui le garderait pendant un `.await` ne compilerait pas.
+No lock is held while waiting. The compiler actually guarantees it: a `std::sync::MutexGuard` is not `Send`, so a task started with `tokio::spawn` that held one across an `.await` would not compile.
 
 ### Benchmark
 
-`cargo bench --bench replay` rejoue le Black Thursday complet (1 440 minutes) sans délai entre les pas, sur un pool de 1 000 emprunteurs. Il mesure le travail fait à chaque minute : changer le prix, ajouter les intérêts de chaque position et informer le gardien. Les bots sont laissés de côté : ils attendent un temps fixe, donc avec eux le bench mesurerait l'horloge et non le code.
+`cargo bench --bench replay` replays the whole of Black Thursday (1,440 minutes) without any delay between steps, on a pool of 1,000 borrowers. It measures the work done at each minute: setting the price, adding interest to every position and informing the guardian. The bots are left out: they wait for a fixed time, so with them the benchmark would measure the clock rather than the code.
 
-| Benchmark | Temps | Par minute simulée |
+| Benchmark | Time | Per simulated minute |
 |---|---|---|
-| `replay_black_thursday_1000_positions` | 7,7 ms | environ 5,4 µs |
+| `replay_black_thursday_1000_positions` | 7.7 ms | about 5.4 µs |
 
-**Ce que le bench a révélé.** La première mesure donnait 1,69 s, soit 1,2 ms par minute alors que le calcul en prend quelques microsecondes. La minuterie de tokio a une résolution de 1 ms : même `sleep(Duration::ZERO)` attend le tic suivant. Sans délai, le rejeu cède donc simplement la main aux autres tâches (`tokio::task::yield_now`), et le rejeu est 219 fois plus rapide. Le test d'intégration en profite aussi.
+**What the benchmark revealed.** The first measurement gave 1.69 s, that is 1.2 ms per minute when the computation takes a few microseconds. The tokio timer has a 1 ms resolution: even `sleep(Duration::ZERO)` waits for the next tick. Without a delay, the replay therefore simply yields to the other tasks (`tokio::task::yield_now`), and the replay is 219 times faster. The integration test benefits from it too.
 
-Pendant la démo, avec 10 ms par minute, le calcul représente moins de 0,1 % du temps : le rejeu passe son temps à attendre, ce qui confirme le choix d'une tâche tokio. Pour accélérer le calcul lui-même, les pistes sont celles du flamegraph du stress test : `accrue_interest` recalcule la dette totale à chaque minute, et les positions sont rangées dans une `BTreeMap` plutôt qu'un `Vec`.
+During the demo, at 10 ms per minute, the computation takes less than 0.1% of the time: the replay spends its time waiting, which confirms the choice of a tokio task. To speed up the computation itself, the leads are those of the stress test flamegraph: `accrue_interest` recomputes the total debt at every minute, and the positions are stored in a `BTreeMap` rather than a `Vec`.
 
-## Gardien du risque et stress test
+## Risk guardian and stress test
 
-### Gardien du risque
+### Risk guardian
 
-À chaque nouveau prix, le gardien calcule la baisse entre le prix le plus haut des 60 dernières minutes et le prix actuel. Il en déduit un mode, qui s'applique uniquement aux nouveaux emprunts :
+At each new price, the guardian computes the drop between the highest price of the last 60 minutes and the current price. It derives a mode from it, which only applies to new borrows:
 
-| Mode | Baisse sur 60 min | Nouveaux emprunts |
+| Mode | Drop over 60 min | New borrows |
 |---|---|---|
-| `Normal` | < 5 % | LTV de 75 % |
-| `Alert` | 5 % à 15 % | LTV abaissé à 50 % |
-| `Emergency` | ≥ 15 % | suspendus (`BorrowingPaused`) |
+| `Normal` | < 5% | 75% LTV |
+| `Alert` | 5% to 15% | LTV lowered to 50% |
+| `Emergency` | ≥ 15% | paused (`BorrowingPaused`) |
 
-Les positions existantes ne sont jamais modifiées. Le gardien agit seulement par deux champs de `Protocol` : `borrowing_paused` et `max_ltv_override`. `Protocol` ne dépend donc pas du gardien.
+Existing positions are never modified. The guardian only acts through two fields of `Protocol`: `borrowing_paused` and `max_ltv_override`. `Protocol` therefore does not depend on the guardian.
 
-Ces deux champs sont sauvegardés avec le reste de `Protocol`. Après un `/load`, le gardien observe donc le prix rechargé, comme après `POST /price`. Sans cela, le fichier ramènerait les restrictions du moment de la sauvegarde, même avec un gardien désactivé depuis, et le gardien ne verrait pas l'écart entre le prix rechargé et ceux de la dernière heure.
+These two fields are saved with the rest of `Protocol`. After a `/load`, the guardian therefore observes the reloaded price, as after `POST /price`. Otherwise, the file would bring back the restrictions of the moment of the save, even with a guardian disabled since then, and the guardian would not see the gap between the reloaded price and those of the last hour.
 
 ### Stress test
 
-Le stress test rejoue N krachs aléatoires sur le même portefeuille, une fois sans gardien et une fois avec.
+The stress test replays N random crashes on the same portfolio, once without the guardian and once with it.
 
-- **Krach :** une chute en ligne droite de 10 à 70 % sur une durée de 30 minutes à 24 heures, avec un bruit de ±0,5 % par minute.
-- **Portefeuille :** 80 emprunteurs entre 30 et 70 % de LTV, et 20 « acheteurs de baisse ». Ces derniers empruntent le maximum autorisé une fois que le prix a baissé de 2,5 %, 5 %, … ou 50 %.
-- **Liquidation synchrone :** chaque minute, les liquidateurs liquident au plus 2 positions avec la règle de la section 4.5 (`liquidation.rs`), qui rembourse jusqu'à 50 % de la dette contre du collatéral avec une prime de 5 %. Une position qui n'a plus rien à saisir ne prend pas de place. Sans cette limite de capacité, la liquidation suit toujours un krach progressif et aucune dette irrécouvrable n'apparaît. C'est précisément ce qui a manqué lors du Black Thursday.
-- **Survie :** le protocole survit si la dette irrécouvrable est nulle à la fin du krach.
+- **Crash:** a straight-line drop of 10 to 70% over 30 minutes to 24 hours, with ±0.5% of noise per minute.
+- **Portfolio:** 80 borrowers between 30 and 70% LTV, and 20 "dip buyers". The latter borrow the maximum allowed once the price has dropped by 2.5%, 5%, … or 50%.
+- **Synchronous liquidation:** each minute, the liquidators liquidate at most 2 positions with the rule of section 4.5 (`liquidation.rs`), which repays up to 50% of the debt against collateral with a 5% bonus. A position with nothing left to seize does not take a slot. Without this capacity limit, liquidation always keeps up with a progressive crash and no bad debt appears. That is precisely what went wrong during Black Thursday.
+- **Survival:** the protocol survives if the bad debt is zero at the end of the crash.
 
-Résultat avec 10 000 scénarios et la graine 42 :
+Result with 10,000 scenarios and seed 42:
 
-| | Sans gardien | Avec gardien |
+| | Without guardian | With guardian |
 |---|---|---|
-| Taux de survie | 91,2 % | 92,3 % |
-| Dette irrécouvrable moyenne | 1 536,59 USDC | 939,41 USDC |
+| Survival rate | 91.2% | 92.3% |
+| Average bad debt | 1,536.59 USDC | 939.41 USDC |
 
-Le gardien réduit la dette irrécouvrable de 39 %, mais il améliore peu le taux de survie. Dans les krachs les plus violents, la perte vient des positions ouvertes avant le krach, que le gardien ne touche pas.
+The guardian reduces the bad debt by 39%, but barely improves the survival rate. In the most violent crashes, the loss comes from positions opened before the crash, which the guardian does not touch.
 
-Aucune des 2 888 901 liquidations des 20 000 rejeux ne vise une position déjà insolvable, et aucune n'épuise son collatéral. La dette irrécouvrable vient des positions que les liquidateurs n'atteignent pas à temps : elles deviennent insolvables en attendant leur tour. Le plafond au collatéral restant de la section 4.5 ne change donc pas ces chiffres.
+None of the 2,888,901 liquidations of the 20,000 replays targets a position that is already insolvent, and none exhausts its collateral. The bad debt comes from positions the liquidators do not reach in time: they become insolvent while waiting for their turn. The remaining-collateral cap of section 4.5 therefore does not change these figures.
 
 ### Routes
 
-| Méthode | Route | Effet |
+| Method | Route | Effect |
 |---|---|---|
-| GET | `/risk` | mode, baisse observée (en bps) et état du gardien |
-| POST | `/risk/toggle` | active ou désactive le gardien |
-| POST | `/stress-test` | `{ "scenarios": 10000 }`, renvoie le rapport du stress test (100 000 scénarios au maximum) |
+| GET | `/risk` | mode, observed drop (in bps) and state of the guardian |
+| POST | `/risk/toggle` | turns the guardian on or off |
+| POST | `/stress-test` | `{ "scenarios": 10000 }`, returns the stress test report (100,000 scenarios at most) |
 
-`POST /price` compte comme une minute pour le gardien. On peut donc le tester à la main :
+`POST /price` counts as one minute for the guardian. It can therefore be tested by hand:
 
 ```bash
 curl -X POST localhost:3000/price -H "$H" -d '{"price":200000}'
-curl -X POST localhost:3000/price -H "$H" -d '{"price":160000}'   # -20 % : Emergency
+curl -X POST localhost:3000/price -H "$H" -d '{"price":160000}'   # -20%: Emergency
 curl localhost:3000/risk
 curl -X POST localhost:3000/stress-test -H "$H" -d '{"scenarios":10000}'
 ```
 
-### Async ou threads
+### Async or threads
 
-- **Le stress test tourne sur des threads système** (`std::thread::scope`). C'est du calcul pur, sans attente : chaque thread reçoit une tranche des scénarios et l'exécute sur son propre cœur. `scope` permet aux threads d'emprunter le portefeuille sans `Arc`. Chaque scénario travaille sur un clone de `Protocol`, donc les threads n'ont aucun verrou à prendre.
-- **La route lance ce calcul dans `tokio::task::spawn_blocking`.** Exécuté directement dans un handler async, il occuperait un worker tokio pendant plusieurs secondes et ralentirait les autres requêtes.
-- **Chaque scénario a sa propre graine** (`graine + index`). Le résultat est donc identique quel que soit le nombre de threads, ce que vérifie `tests/stress.rs`.
+- **The stress test runs on system threads** (`std::thread::scope`). It is pure computation, without waiting: each thread gets a slice of the scenarios and runs it on its own core. `scope` lets the threads borrow the portfolio without an `Arc`. Each scenario works on a clone of `Protocol`, so the threads have no lock to take.
+- **The route runs this computation in `tokio::task::spawn_blocking`.** Run directly in an async handler, it would keep a tokio worker busy for several seconds and slow down the other requests.
+- **Each scenario has its own seed** (`seed + index`). The result is therefore the same whatever the number of threads, which `tests/stress.rs` checks.
 
-Le gardien de l'API a son propre `Mutex`, à côté de celui du protocole. Quand on a besoin des deux, on verrouille toujours le protocole en premier, ce qui exclut tout interblocage.
+The guardian of the API has its own `Mutex`, next to the one of the protocol. When both are needed, the protocol is always locked first, which rules out any deadlock.
 
-### Benchmark et flamegraph
+### Benchmark and flamegraph
 
-`cargo bench --bench stress_test` mesure 10 000 scénarios sur 1 thread puis sur tous les cœurs. Une mesure dure plusieurs secondes : criterion fait 10 échantillons à plat (`SamplingMode::Flat`), et le bench prend environ 8 minutes.
+`cargo bench --bench stress_test` measures 10,000 scenarios on 1 thread, then on every core. One measurement takes several seconds: criterion takes 10 flat samples (`SamplingMode::Flat`), and the benchmark takes about 8 minutes.
 
-| Benchmark | Temps | Débit |
+| Benchmark | Time | Throughput |
 |---|---|---|
-| `stress_test/threads/1` | 12,9 s | 776 scénarios/s |
-| `stress_test/threads/8` | 2,80 s | 3 576 scénarios/s |
+| `stress_test/threads/1` | 12.9 s | 776 scenarios/s |
+| `stress_test/threads/8` | 2.80 s | 3,576 scenarios/s |
 
-Sur 8 cœurs, le gain est de ×4,6 et non ×8. Deux raisons probables : le processeur (Apple Silicon) mélange cœurs de performance et cœurs d'efficacité, et les tranches n'ont pas la même durée, alors que le thread le plus lent fixe la durée totale.
+On 8 cores, the speedup is ×4.6 and not ×8. Two likely reasons: the processor (Apple Silicon) mixes performance and efficiency cores, and the slices do not all take the same time, while the slowest thread sets the total time.
 
 #### Flamegraph
 
-[`docs/flamegraph-stress-test.svg`](docs/flamegraph-stress-test.svg) profile le benchmark `stress_test/threads/1`. Il est produit avec les outils standard : `sample`, l'échantillonneur intégré à macOS, et [inferno](https://github.com/jonhoo/inferno), les scripts de flamegraph de Brendan Gregg portés en Rust.
+[`docs/flamegraph-stress-test.svg`](docs/flamegraph-stress-test.svg) profiles the `stress_test/threads/1` benchmark. It is produced with standard tools: `sample`, the sampler built into macOS, and [inferno](https://github.com/jonhoo/inferno), Brendan Gregg's flamegraph scripts ported to Rust.
 
-Sur macOS, `cargo flamegraph` passe par `xctrace`, qui demande Xcode complet. `sample`, lui, n'a besoin ni de Xcode ni des droits root.
+On macOS, `cargo flamegraph` goes through `xctrace`, which requires the full Xcode. `sample` needs neither Xcode nor root rights.
 
 ```bash
 cargo install inferno rustfilt
@@ -277,24 +277,24 @@ $BIN --bench --profile-time 40 stress_test/threads/1 > /dev/null & sleep 5
 sample $! 30 1 -file /tmp/stress.sample
 rustfilt < /tmp/stress.sample | inferno-collapse-sample \
   | sed -E 's/stress_test-[0-9a-f]+`//g' \
-  | inferno-flamegraph --title "CrashLend : stress test sur 1 thread (cargo bench)" \
+  | inferno-flamegraph --title "CrashLend: stress test on 1 thread (cargo bench)" \
   > docs/flamegraph-stress-test.svg
 ```
 
-Sur Linux, `cargo flamegraph` passe par `perf` : `cargo flamegraph --bench stress_test -- --bench --profile-time 30 stress_test/threads/1`.
+On Linux, `cargo flamegraph` goes through `perf`: `cargo flamegraph --bench stress_test -- --bench --profile-time 30 stress_test/threads/1`.
 
-`sample` ne voit pas les fonctions inlinées : `liquidate`, `health_factor` et `buy_the_dip` apparaissent sous `simulate`.
+`sample` does not see inlined functions: `liquidate`, `health_factor` and `buy_the_dip` appear under `simulate`.
 
-| Fonction | Part du temps | Cause |
+| Function | Share of time | Cause |
 |---|---|---|
-| `simulate` (code inliné) | 51,5 % | surtout le facteur de santé de chaque position, à chaque minute (`liquidate`). Sa division `u128` pèse à elle seule 25,8 % du temps. |
-| `Protocol::accrue_interest` | 43,8 % | le calcul en `u128` des intérêts de chaque position, à chaque minute. Dans ces 43,8 %, `current_rate` pèse 12,6 % : `total_debt` reparcourt toutes les positions à chaque minute pour calculer l'utilisation. |
-| `Guardian::observe` | 2,9 % | maximum sur les 60 derniers prix |
-| `memcmp` | 1,7 % | comparaisons de `String` dans `liquidate` et les autres accès à la `BTreeMap` |
+| `simulate` (inlined code) | 51.5% | mostly the health factor of every position, at every minute (`liquidate`). Its `u128` division alone takes 25.8% of the time. |
+| `Protocol::accrue_interest` | 43.8% | the `u128` computation of the interest of every position, at every minute. Within these 43.8%, `current_rate` takes 12.6%: `total_debt` walks through every position again at every minute to compute the utilization. |
+| `Guardian::observe` | 2.9% | maximum over the last 60 prices |
+| `memcmp` | 1.7% | `String` comparisons in `liquidate` and the other accesses to the `BTreeMap` |
 
-Pistes d'amélioration :
+Leads for improvement:
 
-- **Fait : ne plus chercher les acheteurs qui ont déjà emprunté.** Un acheteur n'emprunte qu'une fois, et sa dette ne revient jamais à zéro, puisqu'une liquidation en rembourse au plus la moitié. Un drapeau par acheteur évite donc de chercher sa position dans la `BTreeMap` à chaque minute. `memcmp` passe de 17,2 % à 1,7 % du temps, et le bench de 16,4 s à 12,9 s sur 1 thread (−21,5 %) et de 3,48 s à 2,80 s sur 8 threads (−19,6 %), avec des résultats identiques.
-- **`is_liquidatable` sans division.** Comparer `valeur du collatéral × seuil < dette × 10 000` donne le même résultat avec une seule multiplication. C'est maintenant la plus grosse piste : cette division pèse 25,8 % du temps.
-- **Tenir la dette totale à jour dans `Protocol`** à chaque emprunt, remboursement et intérêt, au lieu de la recalculer. Cela supprime le second parcours des positions à chaque minute (12,6 % du temps).
-- **Le gardien est une priorité faible.** Une file monotone rendrait le maximum en O(1), mais elle ne peut pas gagner plus que ses 3 %.
+- **Done: no longer look up dip buyers that have already borrowed.** A buyer only borrows once, and its debt never goes back to zero, since a liquidation repays at most half of it. A flag per buyer therefore avoids looking up its position in the `BTreeMap` at every minute. `memcmp` goes from 17.2% to 1.7% of the time, and the benchmark from 16.4 s to 12.9 s on 1 thread (−21.5%) and from 3.48 s to 2.80 s on 8 threads (−19.6%), with identical results.
+- **`is_liquidatable` without a division.** Comparing `collateral value × threshold < debt × 10,000` gives the same result with a single multiplication. It is now the biggest lead: this division takes 25.8% of the time.
+- **Keep the total debt up to date in `Protocol`** at every borrow, repayment and interest accrual, instead of recomputing it. This removes the second pass over the positions at every minute (12.6% of the time).
+- **The guardian is a low priority.** A monotonic queue would give the maximum in O(1), but it cannot gain more than its 3%.
