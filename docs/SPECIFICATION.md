@@ -452,7 +452,7 @@ Chaque membre est responsable d'une partie métier complète : le code, les test
 - Le code doit rester simple et lisible : des structures, des énumérations, du `match` et des boucles. Pas de généricité inutile, pas de macros personnalisées, pas de `unsafe`.
 - Chaque fichier commence par un commentaire `//!` qui décrit son rôle. Chaque élément public est documenté par un commentaire `///`.
 - Les commentaires expliquent le pourquoi, pas le quoi.
-- Le code, les noms et les commentaires sont en anglais. La documentation du projet est en français.
+- Le code, les noms, les commentaires et le README sont en anglais. La spécification reste en français.
 
 ### 13.2 Git
 
