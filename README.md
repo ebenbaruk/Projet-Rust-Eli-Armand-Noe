@@ -91,6 +91,40 @@ End of a run, steps 4 and 5:
 
 Without a terminal (for example `./scripts/demo.sh --auto > demo.log`), the script skips the colors and the live lines and prints only the results. The save step overwrites any previous `state.json`.
 
+## Benchmarks and flamegraph
+
+There are three criterion benchmarks, one per part of the project, and a flamegraph of the stress test. Each one is explained in the section of its part.
+
+```bash
+cargo bench --bench health_factor   # about 30 s
+cargo bench --bench replay          # about 30 s
+cargo bench --bench stress_test     # about 8 min
+```
+
+criterion writes its HTML reports to `target/criterion/report/index.html`.
+
+| Benchmark | Measures | Result | Details |
+|---|---|---|---|
+| `health_factor_10000_positions` | finding the liquidatable positions among 10,000 | 80 µs | [Lending protocol](#lending-protocol) |
+| `accrue_interest_10000_positions` | one minute of interest on 10,000 positions | 63 µs | [Lending protocol](#lending-protocol) |
+| `replay_black_thursday_1000_positions` | a full replay of Black Thursday, without delay | 9.4 ms | [Crashes and liquidations](#crashes-and-liquidations) |
+| `stress_test/threads/1` | 10,000 random crashes on 1 thread | 17.1 s | [Risk guardian and stress test](#risk-guardian-and-stress-test) |
+| `stress_test/threads/10` | the same crashes on 10 threads | 2.26 s (×7.6) | [Risk guardian and stress test](#risk-guardian-and-stress-test) |
+
+These results come from an Apple M1 Pro (8 performance and 2 efficiency cores), on AC power. Times depend on the machine: the sections of each part give the times measured when the benchmark was written. On macOS, Low Power Mode makes every benchmark 20 to 25% slower.
+
+Time distribution of `health_factor_10000_positions`, drawn by criterion:
+
+![criterion: health_factor_10000_positions](docs/benchmarks/health-factor.svg)
+
+Time distribution of `replay_black_thursday_1000_positions`:
+
+![criterion: replay_black_thursday_1000_positions](docs/benchmarks/replay.svg)
+
+Flamegraph of the stress test on 1 thread. The width of a bar is its share of the CPU time: the health factor of every position (inlined in `simulate`) and `Protocol::accrue_interest` take almost all of it. Open the [SVG file](docs/flamegraph-stress-test.svg) in a browser to zoom in.
+
+![Flamegraph of the stress test](docs/flamegraph-stress-test.svg)
+
 ## Code layout
 
 | Module | Role |
@@ -145,12 +179,12 @@ A `std::sync::Mutex` is enough: the lock is never held across an `.await`, so it
 
 ### Benchmark
 
-`cargo bench` measures two loops on a pool of 10,000 positions:
+`cargo bench --bench health_factor` measures two loops on a pool of 10,000 positions:
 
 | Benchmark | Measures | Typical result |
 |---|---|---|
 | `health_factor_10000_positions` | finding which positions can be liquidated, as a bot does at each step | about 80 µs |
-| `accrue_interest_10000_positions` | adding one minute of interest to every position | about 85 µs |
+| `accrue_interest_10000_positions` | adding one minute of interest to every position | about 63 µs |
 
 Both loops run at every simulated minute: they set the speed of a replay. To make them faster, the positions could be stored in a `Vec` rather than a `BTreeMap`, which makes the traversal more cache-friendly.
 
