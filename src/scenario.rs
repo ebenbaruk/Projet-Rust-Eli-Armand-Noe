@@ -5,15 +5,24 @@
 //! project never needs the network at run time.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::LendingError;
 use crate::types::Price;
 
-/// Folder that holds the scenario files, relative to the root of the project.
+/// Folder that holds the scenario files, inside the root of the project.
 pub const DATA_DIR: &str = "data";
+
+/// Returns the `data/` folder of the project.
+///
+/// The path starts from the root of the project, known when the code is
+/// compiled, and not from the folder the server is launched from. The server
+/// therefore finds the scenarios wherever it is started.
+pub fn data_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(DATA_DIR)
+}
 
 /// Ids of the scenarios shipped in `data/`.
 ///
@@ -77,12 +86,6 @@ fn check(scenario: &Scenario) -> Result<(), LendingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    /// The `data/` folder of the project, whatever the folder the tests run from.
-    fn data_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(DATA_DIR)
-    }
 
     /// An empty temporary folder, to write broken scenario files in.
     fn temp_dir(name: &str) -> PathBuf {
@@ -106,6 +109,13 @@ mod tests {
         let lowest = scenario.prices.iter().min().unwrap();
         // ETH lost more than 40 % during the day.
         assert!(lowest.0 * 10 < first.0 * 6);
+    }
+
+    #[test]
+    fn data_dir_does_not_depend_on_the_launch_folder() {
+        // An absolute path points to the same folder wherever the server starts.
+        assert!(data_dir().is_absolute());
+        assert!(data_dir().join("black-thursday.json").is_file());
     }
 
     #[test]
