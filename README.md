@@ -110,6 +110,8 @@ Ces deux boucles tournent à chaque minute simulée : elles déterminent la vite
 
 Ces prix sont les cours de clôture des bougies d'une minute ETH/USDT de l'API publique de Binance. `scripts/fetch_scenarios.sh` les télécharge une seule fois avec `curl` et `jq`, et s'arrête si une minute manque. Le serveur ne dépend donc d'aucun service extérieur. `scenario.rs` n'accepte que les identifiants connus : un identifiant reçu par l'API ne peut pas viser un autre fichier du disque.
 
+Le serveur trouve `data/` à partir de la racine du projet, connue à la compilation (`env!("CARGO_MANIFEST_DIR")` dans `scenario::data_dir`), et non à partir du dossier où il est lancé. `cargo run` ou `target/release/crashlend` fonctionnent donc depuis n'importe quel dossier. La seule condition est que le dossier du projet existe toujours : un binaire copié sur une autre machine ne trouverait pas les scénarios.
+
 ### Routes
 
 | Méthode | Route | Effet |

@@ -5,13 +5,12 @@
 //! The bots are left out: they sleep for a fixed time, so with them the
 //! benchmark would measure the clock rather than the code.
 
-use std::path::Path;
 use std::time::Duration;
 
 use crashlend::api::AppState;
 use crashlend::protocol::Protocol;
 use crashlend::replay::{self, ReplayConfig};
-use crashlend::scenario::{self, DATA_DIR};
+use crashlend::scenario;
 use crashlend::types::{EthAmount, Params, Price, UsdcAmount, UserId};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
@@ -35,8 +34,7 @@ fn pool() -> AppState {
 }
 
 fn replay_benchmark(c: &mut Criterion) {
-    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join(DATA_DIR);
-    let scenario = scenario::load(&data, "black-thursday").unwrap();
+    let scenario = scenario::load(&scenario::data_dir(), "black-thursday").unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let config = ReplayConfig {
         step_delay: Duration::ZERO,

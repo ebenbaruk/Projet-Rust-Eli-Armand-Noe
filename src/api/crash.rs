@@ -1,8 +1,6 @@
 //! Routes of the crash replays: scenarios, replay, liquidation history and report.
 
-use std::path::Path;
-
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,7 +10,7 @@ use crate::api::AppState;
 use crate::error::LendingError;
 use crate::replay::{self, LiquidationRecord, ReplayConfig};
 use crate::report::ReplayReport;
-use crate::scenario::{self, DATA_DIR, Scenario};
+use crate::scenario::{self, Scenario};
 use crate::types::Price;
 
 /// Routes of the crash part of the API.
@@ -63,7 +61,7 @@ pub struct ReplayStarted {
 
 /// GET /scenarios: lists the historical crashes and their real starting price.
 pub async fn list_scenarios() -> Result<Json<Vec<ScenarioView>>, LendingError> {
-    let scenarios = scenario::load_all(Path::new(DATA_DIR))?;
+    let scenarios = scenario::load_all(&scenario::data_dir())?;
     Ok(Json(scenarios.iter().map(ScenarioView::new).collect()))
 }
 
@@ -74,9 +72,9 @@ pub async fn list_scenarios() -> Result<Json<Vec<ScenarioView>>, LendingError> {
 /// `ReplayAlreadyRunning`.
 pub async fn start_replay(
     State(state): State<AppState>,
-    UrlPath(id): UrlPath<String>,
+    Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<ReplayStarted>), LendingError> {
-    let scenario = scenario::load(Path::new(DATA_DIR), &id)?;
+    let scenario = scenario::load(&scenario::data_dir(), &id)?;
     let minutes = scenario.prices.len();
     // The task is not awaited: it stores its report in the shared state.
     replay::start(&state, &id, scenario.prices, ReplayConfig::default())?;
@@ -111,8 +109,8 @@ mod tests {
         AppState::new(Protocol::new(Params::default(), Price::from_usdc(2_000)))
     }
 
-    fn black_thursday() -> UrlPath<String> {
-        UrlPath("black-thursday".to_string())
+    fn black_thursday() -> Path<String> {
+        Path("black-thursday".to_string())
     }
 
     #[tokio::test]
@@ -129,7 +127,7 @@ mod tests {
     async fn replay_of_an_unknown_scenario_is_refused() {
         let state = test_state();
 
-        let result = start_replay(State(state), UrlPath("covid".to_string())).await;
+        let result = start_replay(State(state), Path("covid".to_string())).await;
 
         assert_eq!(
             result.err(),
