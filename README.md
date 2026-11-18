@@ -250,14 +250,14 @@ Le gardien de l'API a son propre `Mutex`, à côté de celui du protocole. Quand
 
 ### Benchmark et flamegraph
 
-`cargo bench --bench stress_test` mesure 10 000 scénarios sur 1 thread puis sur tous les cœurs. Une mesure dure plusieurs secondes : criterion fait 10 échantillons à plat (`SamplingMode::Flat`), et le bench prend environ 9 minutes.
+`cargo bench --bench stress_test` mesure 10 000 scénarios sur 1 thread puis sur tous les cœurs. Une mesure dure plusieurs secondes : criterion fait 10 échantillons à plat (`SamplingMode::Flat`), et le bench prend environ 8 minutes.
 
 | Benchmark | Temps | Débit |
 |---|---|---|
-| `stress_test/threads/1` | 15,5 s | 645 scénarios/s |
-| `stress_test/threads/8` | 3,31 s | 3 020 scénarios/s |
+| `stress_test/threads/1` | 12,9 s | 776 scénarios/s |
+| `stress_test/threads/8` | 2,80 s | 3 576 scénarios/s |
 
-Sur 8 cœurs, le gain est de ×4,7 et non ×8. Deux raisons probables : le processeur (Apple Silicon) mélange cœurs de performance et cœurs d'efficacité, et les tranches n'ont pas la même durée, alors que le thread le plus lent fixe la durée totale.
+Sur 8 cœurs, le gain est de ×4,6 et non ×8. Deux raisons probables : le processeur (Apple Silicon) mélange cœurs de performance et cœurs d'efficacité, et les tranches n'ont pas la même durée, alors que le thread le plus lent fixe la durée totale.
 
 #### Flamegraph
 
@@ -283,14 +283,14 @@ Sur Linux, `cargo flamegraph` passe par `perf` : `cargo flamegraph --bench stres
 
 | Fonction | Part du temps | Cause |
 |---|---|---|
-| `Protocol::accrue_interest` | 43,5 % | une division `u128` par position et par minute. Dans ces 43,5 %, `current_rate` pèse 13,5 % : `total_debt` reparcourt toutes les positions à chaque minute pour calculer l'utilisation. |
-| `simulate` (code inliné) | 30,4 % | surtout le facteur de santé de chaque position, à chaque minute (`liquidate`) |
-| `memcmp` | 20,3 % | comparaisons de `String` dans la `BTreeMap`, quand `buy_the_dip` cherche la position de chaque acheteur à chaque minute |
+| `simulate` (code inliné) | 51,5 % | surtout le facteur de santé de chaque position, à chaque minute (`liquidate`). Sa division `u128` pèse à elle seule 25,8 % du temps. |
+| `Protocol::accrue_interest` | 43,8 % | le calcul en `u128` des intérêts de chaque position, à chaque minute. Dans ces 43,8 %, `current_rate` pèse 12,6 % : `total_debt` reparcourt toutes les positions à chaque minute pour calculer l'utilisation. |
 | `Guardian::observe` | 2,9 % | maximum sur les 60 derniers prix |
+| `memcmp` | 1,7 % | comparaisons de `String` dans `liquidate` et les autres accès à la `BTreeMap` |
 
 Pistes d'amélioration :
 
-- **Ne plus chercher les acheteurs qui ont déjà emprunté**, en gardant un drapeau par acheteur. On peut aussi stocker les positions dans un `Vec` indexé plutôt que dans une `BTreeMap<UserId, _>`. Cela supprime les 20 % de `memcmp`.
-- **Tenir la dette totale à jour dans `Protocol`** à chaque emprunt, remboursement et intérêt, au lieu de la recalculer. Cela supprime le second parcours des positions à chaque minute.
-- **`is_liquidatable` sans division.** Comparer `valeur du collatéral × seuil < dette × 10 000` donne le même résultat avec une seule multiplication.
+- **Fait : ne plus chercher les acheteurs qui ont déjà emprunté.** Un acheteur n'emprunte qu'une fois, et sa dette ne revient jamais à zéro, puisqu'une liquidation en rembourse au plus la moitié. Un drapeau par acheteur évite donc de chercher sa position dans la `BTreeMap` à chaque minute. `memcmp` passe de 17,2 % à 1,7 % du temps, et le bench de 16,4 s à 12,9 s sur 1 thread (−21,5 %) et de 3,48 s à 2,80 s sur 8 threads (−19,6 %), avec des résultats identiques.
+- **`is_liquidatable` sans division.** Comparer `valeur du collatéral × seuil < dette × 10 000` donne le même résultat avec une seule multiplication. C'est maintenant la plus grosse piste : cette division pèse 25,8 % du temps.
+- **Tenir la dette totale à jour dans `Protocol`** à chaque emprunt, remboursement et intérêt, au lieu de la recalculer. Cela supprime le second parcours des positions à chaque minute (12,6 % du temps).
 - **Le gardien est une priorité faible.** Une file monotone rendrait le maximum en O(1), mais elle ne peut pas gagner plus que ses 3 %.

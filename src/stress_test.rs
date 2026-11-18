@@ -135,14 +135,18 @@ fn random_crash(rng: &mut StdRng) -> Vec<Price> {
 pub fn simulate(portfolio: &Portfolio, prices: &[Price], guardian_enabled: bool) -> UsdcAmount {
     let mut protocol = portfolio.protocol.clone();
     let mut guardian = Guardian::new(guardian_enabled);
+    // A dip buyer borrows only once. Their debt then never goes back to zero,
+    // since a liquidation repays at most half of it, so looking up their
+    // position again every minute would be wasted work.
+    let mut has_borrowed = vec![false; portfolio.dip_buyers.len()];
 
     for &price in prices {
         protocol.price = price;
         protocol.accrue_interest();
         guardian.observe(&mut protocol);
-        for (user, trigger) in &portfolio.dip_buyers {
-            if price <= *trigger {
-                buy_the_dip(&mut protocol, user);
+        for ((user, trigger), borrowed) in portfolio.dip_buyers.iter().zip(&mut has_borrowed) {
+            if !*borrowed && price <= *trigger {
+                *borrowed = buy_the_dip(&mut protocol, user);
             }
         }
         liquidate(&mut protocol);
@@ -152,17 +156,19 @@ pub fn simulate(portfolio: &Portfolio, prices: &[Price], guardian_enabled: bool)
 }
 
 /// A dip buyer without debt borrows the most the protocol allows right now.
-fn buy_the_dip(protocol: &mut Protocol, user: &UserId) {
+///
+/// Returns true once the buyer has debt, so the caller can stop asking.
+fn buy_the_dip(protocol: &mut Protocol, user: &UserId) -> bool {
     let Ok(position) = protocol.position(user) else {
-        return;
+        return false;
     };
     if position.debt.0 > 0 {
-        return;
+        return true;
     }
     let amount = position.max_borrow(protocol.price, protocol.current_max_ltv());
     // A refusal, such as a pause from the guardian, is part of the simulation:
     // the buyer simply tries again the next minute.
-    let _ = protocol.borrow(user, amount);
+    protocol.borrow(user, amount).is_ok()
 }
 
 /// Liquidates the first unhealthy positions, in the order of the `BTreeMap`,
